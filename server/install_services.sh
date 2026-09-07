@@ -20,5 +20,6 @@ for s in ${=SERVICES}; do
       -e "s|__OLLAMA_SSH_HOST__|$OLLAMA_SSH_HOST|g" -e "s|<string>stackchan-$s</string>|<string>$label</string>|" -e "s|/tmp/stackchan-$s.log|/tmp/$label.log|g" \
       "$REPO/server/launchd/stackchan-$s.plist" > "$dst"
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  sleep 2   # give launchd time to tear the old instance down, otherwise bootstrap fails with an I/O error
   launchctl bootstrap "gui/$(id -u)" "$dst" && echo "started $label"
 done

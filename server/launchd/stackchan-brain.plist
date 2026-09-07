@@ -11,6 +11,7 @@
     <key>STACKCHAN_VLM_URL</key><string>__VLM_URL__</string>
     <key>STACKCHAN_VLM_MODEL</key><string>__VLM_MODEL__</string>
     <key>HF_HUB_OFFLINE</key><string>1</string>
+    <key>STACKCHAN_BOARD_URL</key><string>http://__BOARD_IP__</string>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string>
   </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>

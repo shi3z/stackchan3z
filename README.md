@@ -18,7 +18,10 @@ greets them in Kansai dialect via a VLM, and is reachable from anywhere on your 
 - **ご主人**: 普段使う人を「ご主人」として登録（ダッシュボードの「ご主人にする」か `/owner?name=`）。
   - ご主人以外（知らない人も、名前を覚えた別の人も）が映ったら写真を保存して Mac に通知し、次にご主人が来たときに「さっき○○さんが来てたで」と口頭で報告して、その人の写真を画面に出す。
   - ご主人の写真を1日1回保存（その日最初に見つけたとき）。
-  - ご主人がうたた寝していたら「風邪ひくで。ベッド行きな」と促す（30分に1回まで）。
+  - ご主人がうたた寝していたら「風邪ひくで。ベッド行きな」と促す（両目が閉じて姿勢が崩れている、を5分以上空けて2回確認したときだけ。30分に1回まで）。
+- **服装**: 顔を認識したら首を下に向けて服を撮影し、その日最初は服のコメント。以後は前回の服の写真と比べて、着替えていれば「あれ、着替えたん？」と指摘、同じなら黙る。撮り終えたら顔に戻る。
+- **プロフィール収集**: ご主人と話すタイミングで（2時間に1回まで）仕事・趣味・住まい・会社の場所などを1問ずつ聞き、答えを録音→Whisper→LLMで要点抽出して `profile.json` に保存。定番の質問が埋まったら LLM が次の質問を考える。
+- **話題の掲示**: プロフィールから LLM が検索語を作り、Google ニュース RSS を検索、関係が深そうな記事を最大3件選んで関西弁で要約。3時間ごとに更新し、ご主人と会話していないときにボードの画面に掲示。ダッシュボードにも一覧。
 - **ダッシュボード**: Mac の `http://<mac>:9002/`（tailnet なら `https://<mac>.<tailnet>.ts.net:8444/`）で、写真と発言の履歴、人物一覧（ご主人設定・削除）を一覧表示。
 - **喋る**: 音声合成は Tsukasa-Speech（StyleTTS2）API か、macOS の `say`（設定不要）。
 - **HTTP API**: 喋る・画面表示・首振り・写真・顔追従設定など。tailscale serve で tailnet 全体から呼べます。
@@ -141,10 +144,16 @@ python3 tools/stackchan_client.py photo shot.jpg
 | `POST /visit` (image/jpeg) | 顔照合 → `{known, name, say, ask, face_id}` |
 | `POST /learn?face_id=..` (audio/wav) | 録音 → Whisper → LLM で名前抽出 → 記憶 → `{name, say}` |
 | `GET /people` / `GET /forget?name=..` / `GET /owner?name=..` | 記憶した人の一覧 / 削除 / ご主人に設定 |
+| `POST /clothes?name=..` (image/jpeg) | 服装の写真 → その日初回はコメント、2回目以降は前回と比較して変化だけ指摘 → `{say, changed}` |
+| `POST /answer?key=..&q=..` (audio/wav) | プロフィール質問への答え → 要点を `profile.json` に保存 → `{say}` |
+| `GET /profile` / `GET /topics` / `GET /topics/refresh` | プロフィール / 話題一覧 / 今すぐ検索 |
 | `GET /` / `GET /events.json` / `GET /photos/<file>` | ダッシュボード / 履歴 JSON / 保存写真 |
 
-記憶は `~/Library/Application Support/stackchan/faces.json`（顔特徴量・ご主人フラグ・挨拶した日・様子見の時刻）、
-履歴は同フォルダの `events.jsonl`、写真は `photos/`。直近の録音（`last_learn.wav`）も残ります。
+記憶は `~/Library/Application Support/stackchan/faces.json`（顔特徴量・ご主人フラグ・挨拶した日・様子見の時刻・服の写真）、
+プロフィールは `profile.json`、話題は `topics.json`、履歴は `events.jsonl`、写真は `photos/`。直近の録音（`last_learn.wav`）も残ります。
+
+`/visit` の応答には、ボードへの指示として `listen`（質問を喋って録音し、そのURLへ送る）、`display`（画面に掲示する文）、
+`show`（表示する写真）、`clothes`（首を下げて服を撮る）、`recheck`（何秒後にもう一度見るか）が含まれます。
 
 ## シリアルコマンド
 
@@ -158,7 +167,9 @@ python3 tools/stackchan_client.py photo shot.jpg
 - `firmware/stackchan_web/config.h`: 首の方向符号、探索の時間、再確認間隔、音量、挨拶文。
 - `firmware/stackchan_web/face.h`: 目の形・まばたき・視線。
 - `server/brain.py`: 挨拶/様子見/居眠りのプロンプト、`CHECKIN_INTERVAL_S`（様子見の間隔）、`SIM_THRESHOLD`（同一人物判定）、
-  `REPORT_COOLDOWN_S`（ご主人以外の報告間隔）、`NAG_INTERVAL_S`（居眠り注意の間隔）、環境変数 `STACKCHAN_OWNER_PHOTO_INTERVAL`（ご主人の写真間隔、秒）。
+  `REPORT_COOLDOWN_S`（ご主人以外の報告間隔）、`NAG_INTERVAL_S`（居眠り注意の間隔）、`PROFILE_QUESTIONS`（定番の質問）。
+  環境変数 `STACKCHAN_OWNER_PHOTO_INTERVAL`（ご主人の写真間隔、秒）、`STACKCHAN_ASK_INTERVAL`（質問の間隔）、`STACKCHAN_TOPIC_INTERVAL`（話題更新の間隔）、
+  `STACKCHAN_BOARD_URL`（話題を掲示するボードの URL。`install_services.sh` が BOARD_IP から設定）。
 - `server/tts_proxy.py`: TTS バックエンド。`STACKCHAN_SAY_VOICE` で `say` の声を変更。
 
 ## ハマりどころ
