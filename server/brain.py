@@ -185,11 +185,16 @@ def wrap_jp(text, width=20, max_lines=5):
             lines.append(para[:width]); para = para[width:]
     return "\n".join(lines[:max_lines])
 
+def topic_speech(topic):
+    return "ニュースやで。" + topic["summary"]
+
 def push_topic_to_board(topic):
+    """Show the topic on the screen and read it out loud."""
     if not BOARD_URL: return False
     text = wrap_jp("📰 " + topic["title"] + "\n" + topic["summary"])
     try:
         urllib.request.urlopen(BOARD_URL.rstrip("/") + "/api/display?" + urllib.parse.urlencode({"text": text, "size": 1, "ms": 25000}), timeout=10)
+        urllib.request.urlopen(BOARD_URL.rstrip("/") + "/api/say?" + urllib.parse.urlencode({"text": topic_speech(topic), "emotion": "happy"}), timeout=120)
         return True
     except Exception as e: print("board push failed:", e, flush=True); return False
 
@@ -422,6 +427,7 @@ class H(BaseHTTPRequestHandler):
                             t = next((x for x in load_topics() if not x.get("shown")), None)
                             if t:
                                 resp["display"] = {"text": wrap_jp("📰 " + t["title"] + "\n" + t["summary"]), "size": 1, "ms": 25000}
+                                resp["say"] = topic_speech(t)      # read it out loud too
                                 tl = load_topics()
                                 for x in tl:
                                     if x["url"] == t["url"]: x["shown"] = True
