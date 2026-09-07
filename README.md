@@ -15,6 +15,11 @@ greets them in Kansai dialect via a VLM, and is reachable from anywhere on your 
 - **顔を見つけたら**: 首を止めて写真を撮り、Mac の「脳」へ送信。
   - 知らない人 →「あんた、だれ？」と聞き、4秒録音 → Whisper で聞き取り → 名前と顔を記憶（「○○さんやな。覚えたで！」）。
   - 知っている人 → その日初めてなら時間帯に合わせた挨拶＋顔の様子の一言。以後は1時間に1回だけ「疲れてない？少し休んだら？」のような気遣い。それ以外は黙る。
+- **ご主人**: 普段使う人を「ご主人」として登録（ダッシュボードの「ご主人にする」か `/owner?name=`）。
+  - ご主人以外（知らない人も、名前を覚えた別の人も）が映ったら写真を保存して Mac に通知し、次にご主人が来たときに「さっき○○さんが来てたで」と口頭で報告して、その人の写真を画面に出す。
+  - ご主人の写真を1日1回保存（その日最初に見つけたとき）。
+  - ご主人がうたた寝していたら「風邪ひくで。ベッド行きな」と促す（30分に1回まで）。
+- **ダッシュボード**: Mac の `http://<mac>:9002/`（tailnet なら `https://<mac>.<tailnet>.ts.net:8444/`）で、写真と発言の履歴、人物一覧（ご主人設定・削除）を一覧表示。
 - **喋る**: 音声合成は Tsukasa-Speech（StyleTTS2）API か、macOS の `say`（設定不要）。
 - **HTTP API**: 喋る・画面表示・首振り・写真・顔追従設定など。tailscale serve で tailnet 全体から呼べます。
 
@@ -98,6 +103,7 @@ BOARD_IP=192.168.1.50 TTS_API=http://100.x.y.z:8000/synthesize \
 
 ```sh
 tools/mac_tailscale.sh expose      # tailscale serve --https=8443 → 127.0.0.1:8080 → board
+tailscale serve --bg --https=8444 http://127.0.0.1:9002   # ダッシュボードも tailnet に公開
 STACKCHAN_URL=https://<mac>.<tailnet>.ts.net:8443 python3 tools/stackchan_client.py status
 ```
 
@@ -111,6 +117,7 @@ STACKCHAN_URL=https://<mac>.<tailnet>.ts.net:8443 python3 tools/stackchan_client
 | `/api/status` | 状態 JSON（IP, RSSI, カメラ, 顔, 首の角度など） |
 | `/api/say?text=...&emotion=happy` | 喋る（tts_proxy 経由） |
 | `/api/display?text=...&size=1..3&ms=4000` | 画面に文字（日本語可、`\n` 改行。size1 は下段バー、2〜3 は中央） |
+| `/api/display?image=URL&ms=6000` | JPEG（QVGA 推奨）を画面に表示。`/photos/...` のような相対パスは脳サービスから取得 |
 | `/api/head?gesture=nod\|shake\|center&n=2` | 首のジェスチャー |
 | `/api/head?pan=60&tilt=100&speed=3` | 首の絶対角（pan 10〜170、tilt 62〜118 = pitch 5〜85°） |
 | `/api/camera.jpg?q=80` | QVGA JPEG |
@@ -133,10 +140,11 @@ python3 tools/stackchan_client.py photo shot.jpg
 |---|---|
 | `POST /visit` (image/jpeg) | 顔照合 → `{known, name, say, ask, face_id}` |
 | `POST /learn?face_id=..` (audio/wav) | 録音 → Whisper → LLM で名前抽出 → 記憶 → `{name, say}` |
-| `GET /people` / `GET /forget?name=..` | 記憶した人の一覧 / 削除 |
+| `GET /people` / `GET /forget?name=..` / `GET /owner?name=..` | 記憶した人の一覧 / 削除 / ご主人に設定 |
+| `GET /` / `GET /events.json` / `GET /photos/<file>` | ダッシュボード / 履歴 JSON / 保存写真 |
 
-記憶は `~/Library/Application Support/stackchan/faces.json`（顔特徴量・挨拶した日・様子見の時刻）。
-直近の写真と録音も同じフォルダに残ります。
+記憶は `~/Library/Application Support/stackchan/faces.json`（顔特徴量・ご主人フラグ・挨拶した日・様子見の時刻）、
+履歴は同フォルダの `events.jsonl`、写真は `photos/`。直近の録音（`last_learn.wav`）も残ります。
 
 ## シリアルコマンド
 
@@ -149,7 +157,8 @@ python3 tools/stackchan_client.py photo shot.jpg
 
 - `firmware/stackchan_web/config.h`: 首の方向符号、探索の時間、再確認間隔、音量、挨拶文。
 - `firmware/stackchan_web/face.h`: 目の形・まばたき・視線。
-- `server/brain.py`: 挨拶/様子見のプロンプト、`CHECKIN_INTERVAL_S`（様子見の間隔）、`SIM_THRESHOLD`（同一人物判定）。
+- `server/brain.py`: 挨拶/様子見/居眠りのプロンプト、`CHECKIN_INTERVAL_S`（様子見の間隔）、`SIM_THRESHOLD`（同一人物判定）、
+  `REPORT_COOLDOWN_S`（ご主人以外の報告間隔）、`NAG_INTERVAL_S`（居眠り注意の間隔）、環境変数 `STACKCHAN_OWNER_PHOTO_INTERVAL`（ご主人の写真間隔、秒）。
 - `server/tts_proxy.py`: TTS バックエンド。`STACKCHAN_SAY_VOICE` で `say` の声を変更。
 
 ## ハマりどころ

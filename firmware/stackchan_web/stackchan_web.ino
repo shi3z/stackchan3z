@@ -252,6 +252,19 @@ int postJson(const String& url, const char* contentType, const uint8_t* body, si
   return code;
 }
 
+// download a JPEG (absolute URL, or a path relative to the brain host) and show it on the screen for ms
+bool showImageFromUrl(String url, uint32_t ms) {
+  if (url.startsWith("/")) { int i = g_commentUrl.indexOf('/', 8); url = (i > 0 ? g_commentUrl.substring(0, i) : g_commentUrl) + url; }
+  HTTPClient http; http.setTimeout(15000);
+  if (!http.begin(url)) return false;
+  int code = http.GET(), len = http.getSize();
+  if (code != 200 || len <= 0) { http.end(); Serial.printf("[image] http %d\n", code); return false; }
+  uint8_t* buf = readBody(http, len); http.end();
+  if (!buf) return false;
+  face.showImage(buf, len, ms);
+  return true;
+}
+
 // ---------- visit task (core 1, one-shot): photo -> brain -> greet / ask the name -> listen -> remember ----------
 void visitTask(void*) {
   size_t jlen = 0; uint8_t* jpg = captureJpeg(&jlen, 85);
@@ -261,13 +274,14 @@ void visitTask(void*) {
   free(jpg);
   if (code != 200) { Serial.printf("[visit] http %d\n", code); g_commentBusy = false; vTaskDelete(nullptr); return; }
   bool known = doc["known"] | false, ask = doc["ask"] | false;
-  String say_ = doc["say"] | "", name = doc["name"] | "", faceId = doc["face_id"] | "";
+  String say_ = doc["say"] | "", name = doc["name"] | "", faceId = doc["face_id"] | "", show = doc["show"] | "";
   Serial.printf("[visit] person=%d known=%d name=%s ask=%d say=%s\n", (int)(doc["person"] | false), known, name.c_str(), ask, say_.c_str());
   if (known && !say_.length()) face.overlay(name + "さん", 2500, 1);
   if (!say_.length()) { g_commentBusy = false; vTaskDelete(nullptr); return; }
   g_lastCommentText = say_; if (known) g_lastName = name;
   face.overlay(known ? (name + "さん  " + say_) : say_, 6000, 1);
   say(say_, known ? "happy" : "neutral");
+  if (show.length()) { showImageFromUrl(show, 8000); }   // e.g. the photo of a visitor being reported to the owner
   if (ask && faceId.length()) {
     waitSpeechDone();
     face.overlay("きいてるで... (4秒)", 4500, 2);
@@ -317,7 +331,7 @@ void handleRoot() {
     "<p>Target: <code>" + (g_target.length() ? g_target : String("(none)")) + "</code></p>"
     "<ul><li><a href=/api/status>/api/status</a></li>"
     "<li><a href=/api/fetch>/api/fetch</a> (GET target; or ?url=...)</li>"
-    "<li><a href='/api/display?text=Hello&size=2&ms=3000'>/api/display?text=...&size=1..3&ms=</a> (Japanese OK, \\n = newline)</li>"
+    "<li><a href='/api/display?text=Hello&size=2&ms=3000'>/api/display?text=...&size=1..3&ms=</a> (Japanese OK, \\n = newline; &image=URL shows a JPEG)</li>"
     "<li><a href='/api/head?gesture=nod'>/api/head?gesture=nod|shake|center&n=2</a> / <a href='/api/head?pan=60&tilt=90'>/api/head?pan=&tilt=&speed=</a></li>"
     "<li><a href='/api/camera.jpg'>/api/camera.jpg?q=80</a></li>"
     "<li><a href='/api/track'>/api/track?on=1&auto=1&mirror=0&head=1&pansign=1&tiltsign=1</a> (face tracking, head follow, auto comment)</li>"
@@ -386,6 +400,12 @@ void handleDisplay2() {
   g_reqCount++;
   String t = server.arg("text"); t.replace("\\n", "\n");
   uint32_t ms = server.hasArg("ms") ? server.arg("ms").toInt() : 4000;
+  if (server.hasArg("image")) {
+    bool ok = showImageFromUrl(server.arg("image"), ms);
+    if (t.length()) face.overlay(t, ms, server.hasArg("size") ? server.arg("size").toInt() : 1);
+    server.send(ok ? 200 : 502, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"image download failed\"}");
+    return;
+  }
   int size = server.hasArg("size") ? server.arg("size").toInt() : 1;
   face.overlay(t, ms, size);
   server.send(200, "application/json", "{\"ok\":true}");

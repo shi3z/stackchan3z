@@ -20,6 +20,9 @@ class Face {
   // External gaze target (e.g. a detected face): nx, ny in -1..1 (screen left/top = -1). valid=false -> idle wander.
   void setLook(float nx, float ny, bool valid) { lookValid = valid; if (valid) { lookNx = constrain(nx, -1.f, 1.f); lookNy = constrain(ny, -1.f, 1.f); lastLook = millis(); } }
   bool isTracking() const { return lookValid; }
+  // show a JPEG (QVGA fits the screen) instead of the eyes for ms; takes ownership of the buffer
+  void showImage(uint8_t* jpg, size_t len, uint32_t ms) { clearImage(); imgBuf = jpg; imgLen = len; imgUntil = millis() + ms; }
+  void clearImage() { if (imgBuf) { free(imgBuf); imgBuf = nullptr; imgLen = 0; } imgUntil = 0; }
   void overlay(const String& text, uint32_t ms, int size = 1) { ovText = text; ovSize = constrain(size, 1, 3); ovUntil = millis() + ms; dirty = true; }
 
   void update() {
@@ -56,6 +59,7 @@ class Face {
     talking = now < talkUntil;
 
     if (ovUntil && now > ovUntil) { ovUntil = 0; ovText = ""; }
+    if (imgBuf && now > imgUntil) clearImage();
     draw();
   }
 
@@ -68,6 +72,7 @@ class Face {
   bool lookValid = false; float lookNx = 0, lookNy = 0; uint32_t lastLook = 0;
   float mouthBase = 0.9f, mouthOpen = 0.9f, talkOpen = 0.5f;
   String ovText; int ovSize = 1;
+  uint8_t* imgBuf = nullptr; size_t imgLen = 0; uint32_t imgUntil = 0;
 
   static constexpr uint16_t BG     = 0x0000;   // black background
   static constexpr uint16_t BLACK  = 0x0000;
@@ -91,15 +96,7 @@ class Face {
     canvas.fillEllipse(cx + px, pcy, pr, pry, BLACK);
   }
 
-  void draw() {
-    canvas.fillScreen(BG);
-
-    // eyes only, centered on the screen; both pupils point the same way
-    int gx = (int)lroundf(gazeX), gy = (int)lroundf(gazeY);   // no jitter: pupils move smoothly only
-    const int ey = H / 2;
-    drawEye(W / 2 - 60, ey, gx, gy, +1);
-    drawEye(W / 2 + 60, ey, gx, gy, -1);
-
+  void drawOverlay() {
     if (ovText.length()) {
       const lgfx::IFont* f = ovSize == 1 ? (const lgfx::IFont*)&fonts::lgfxJapanGothic_16
                            : ovSize == 2 ? (const lgfx::IFont*)&fonts::lgfxJapanGothic_24
@@ -123,6 +120,22 @@ class Face {
       canvas.setTextDatum(top_left);
       canvas.setFont(&fonts::Font0);
     }
+  }
+
+  void draw() {
+    canvas.fillScreen(BG);
+    if (imgBuf) {   // photo mode: draw the JPEG, keep the text overlay
+      canvas.drawJpg(imgBuf, imgLen, 0, 0, W, H, 0, 0, 1.0f, 1.0f, datum_t::middle_center);
+      drawOverlay(); canvas.pushSprite(0, 0); return;
+    }
+
+    // eyes only, centered on the screen; both pupils point the same way
+    int gx = (int)lroundf(gazeX), gy = (int)lroundf(gazeY);   // no jitter: pupils move smoothly only
+    const int ey = H / 2;
+    drawEye(W / 2 - 60, ey, gx, gy, +1);
+    drawEye(W / 2 + 60, ey, gx, gy, -1);
+
+    drawOverlay();
     canvas.pushSprite(0, 0);
   }
 };
