@@ -6,6 +6,8 @@ M5Stack 公式 **StackChan**（CoreS3 + シリアルサーボ首）を、家の 
 *A Stack-chan (official M5Stack StackChan, CoreS3) that searches for faces, remembers people by name,
 greets them in Kansai dialect via a VLM, and is reachable from anywhere on your tailnet. Firmware (Arduino) + Mac-side services.*
 
+<p align="center"><img src="docs/stackchan.jpg" width="640" alt="stackchan3z: M5Stack StackChan with half-moon eyes"></p>
+
 ## できること
 
 - **目**: 黒画面に白い半円の目。まばたきは半円が潰れる表現。瞳は検出した顔を追います。
