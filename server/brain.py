@@ -9,6 +9,8 @@ Needs: insightface, onnxruntime, opencv-python, numpy, mlx-whisper (Apple Silico
   GET  /forget?name=..  /owner?name=.. -> delete a person / make someone the owner ("ご主人")
   POST /answer?key=..&q=..(audio/wav)  -> the owner's answer to a profile question -> stored in profile.json
   GET  /profile  /topics  /topics/refresh -> owner profile facts / news topics picked for the owner / search now
+  POST /chat?sid=..  (audio/wav)       -> next turn of a conversation about a topic ("○○って知ってる？"), up to 3 turns
+  GET  /chat/session?sid=..            -> opener + listen instruction for a dialog the brain pushed to the board
   GET  /                               -> dashboard: photos and what was said, newest first
   GET  /events.json  /photos/<file>    -> raw event log / saved photos (in ~/Library/Application Support/stackchan)
 Text to speak is returned; the board speaks it through the TTS proxy (/say). VLM = Ollama via the ssh tunnel."""
@@ -131,7 +133,7 @@ def extract_answer(question, text):
     prompt = (f"ロボットが「{question}」と質問し、ご主人が次のように答えました（音声認識なので誤変換があるかもしれません）。\n"
               f"答え: {text}\n質問への答えの要点だけを短く（20文字以内）取り出して、次のJSONだけを返してください。答えていない・分からない場合はanswerを空にしてください。\n"
               '{"answer": "要点"}')
-    return str(parse_json(ask_vlm(prompt, None, 60)).get("answer", "")).strip()
+    return clean(parse_json(ask_vlm(prompt, None, 60)).get("answer", ""))
 
 # ---------- news / topics for the owner ----------
 def load_topics():
@@ -173,7 +175,7 @@ def refresh_topics():
         except Exception: continue
         if it["url"] in seen_urls: continue
         new.append({"ts": time.time(), "time": time.strftime("%Y-%m-%d %H:%M"), "title": it["title"], "url": it["url"],
-                    "source": it["source"], "query": it["query"], "summary": str(t.get("summary", "")).strip(), "why": str(t.get("why", "")).strip(), "shown": False})
+                    "source": it["source"], "query": it["query"], "summary": clean(t.get("summary", "")), "why": clean(t.get("why", "")), "shown": False})
     topics = (new + topics)[:100]; save_topics(topics)
     print(f"topics: {len(new)} new from {queries}", flush=True)
     return new
@@ -185,16 +187,53 @@ def wrap_jp(text, width=20, max_lines=5):
             lines.append(para[:width]); para = para[width:]
     return "\n".join(lines[:max_lines])
 
-def topic_speech(topic):
-    return "ニュースやで。" + topic["summary"]
+sessions = {}          # sid -> {"topic", "history": [(who, text)], "turns"}
+owner_seen_ts = 0.0    # last time the owner was in front of the camera
+MAX_DIALOG_TURNS = 3
+
+def topic_opener(topic):
+    prompt = ("あなたは机の上の小さなロボット「スタックちゃん」。関西弁でご主人に話しかけます。次のニュースを話題にして、"
+              "会話の最初の一言を作ってください。「○○って知ってる？〜らしいんやけど」のように自然に切り出し、45文字以内、"
+              "「ニュースです」のような硬い言い方はしない。次のJSONだけを返してください。\n"
+              f"見出し: {topic['title']}\n要約: {topic['summary']}\n" + '{"say": "最初の一言"}')
+    return clean(parse_json(ask_vlm(prompt, None, 90)).get("say", "")) or f"{topic['title'][:20]}って知ってる？{topic['summary']}らしいんやけど"
+
+def start_topic_dialog(topic):
+    """Create a dialog session for a topic. Returns (say, listen) for the board."""
+    sid = uuid.uuid4().hex[:8]
+    opener = topic_opener(topic)
+    sessions[sid] = {"topic": topic, "history": [("stackchan", opener)], "turns": 0, "t": time.time()}
+    log_event("topic", name=(owner() or {}).get("name"), say=opener, title=topic["title"], url=topic["url"])
+    return opener, {"url": f"/chat?sid={sid}", "seconds": 7, "prompt": opener}
+
+def dialog_reply(sid, user_text):
+    """LLM reply within a topic dialog. Returns (say, keep_listening)."""
+    ses = sessions[sid]; t = ses["topic"]
+    ses["history"].append(("owner", user_text)); ses["turns"] += 1
+    hist = "\n".join(f"{'スタックちゃん' if w == 'stackchan' else 'ご主人'}: {x}" for w, x in ses["history"])
+    prompt = ("あなたは机の上の小さなロボット「スタックちゃん」。関西弁で、ご主人とニュースについて雑談しています。\n"
+              f"話題の記事 — 見出し: {t['title']} / 出典: {t.get('source','')} / 要約: {t['summary']} / 選んだ理由: {t.get('why','')}\n"
+              "ご主人について: " + profile_summary().replace("\n", " ") + "\n\nこれまでの会話:\n" + hist +
+              "\n\nご主人の最後の発言（音声認識なので誤変換あり）に自然に応答してください。質問されたら記事の範囲で答え、"
+              "分からないことは正直に「そこまでは知らんねん」と言う。50文字以内。"
+              "ご主人が興味なさそう・話を終えたそう・「知らん」「ええわ」などなら短く締めて会話を終える。次のJSONだけを返してください。\n"
+              '{"say": "返事", "continue": 会話を続けてご主人の次の発言を聞くならtrue、締めるならfalse}')
+    j = parse_json(ask_vlm(prompt, None, 90))
+    say = clean(j.get("say", "")) or "そうなんや。"
+    ses["history"].append(("stackchan", say))
+    cont = bool(j.get("continue", False)) and ses["turns"] < MAX_DIALOG_TURNS
+    log_event("chat", name=(owner() or {}).get("name"), heard=user_text, say=say, title=t["title"])
+    return say, cont
 
 def push_topic_to_board(topic):
-    """Show the topic on the screen and read it out loud."""
+    """Start a conversation about the topic on the board (only when the owner is around)."""
     if not BOARD_URL: return False
-    text = wrap_jp("📰 " + topic["title"] + "\n" + topic["summary"])
+    if time.time() - owner_seen_ts > 20 * 60: print("topics: owner not around, keeping the topic for later", flush=True); return False
+    opener, listen = start_topic_dialog(topic)
+    text = wrap_jp("📰 " + topic["title"])
     try:
-        urllib.request.urlopen(BOARD_URL.rstrip("/") + "/api/display?" + urllib.parse.urlencode({"text": text, "size": 1, "ms": 25000}), timeout=10)
-        urllib.request.urlopen(BOARD_URL.rstrip("/") + "/api/say?" + urllib.parse.urlencode({"text": topic_speech(topic), "emotion": "happy"}), timeout=120)
+        urllib.request.urlopen(BOARD_URL.rstrip("/") + "/api/display?" + urllib.parse.urlencode({"text": text, "size": 1, "ms": 20000}), timeout=10)
+        urllib.request.urlopen(BOARD_URL.rstrip("/") + "/api/dialog?" + urllib.parse.urlencode({"path": "/chat/session?sid=" + listen["url"].split("sid=")[1]}), timeout=10)
         return True
     except Exception as e: print("board push failed:", e, flush=True); return False
 
@@ -243,6 +282,10 @@ def ask_vlm(prompt, jpeg=None, timeout=120, extra_images=()):
     req = urllib.request.Request(VLM_URL, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r: return json.load(r)["message"]["content"].strip()
 
+def clean(text):
+    """LLM output -> single-line text safe for JSON/TTS/screen."""
+    return re.sub(r"[\x00-\x1f\x7f]+", " ", str(text)).strip()
+
 def parse_json(txt):
     m = re.search(r"\{.*\}", txt, re.S)
     try: return json.loads(m.group(0)) if m else {}
@@ -289,14 +332,14 @@ def vlm_clothes_changed(prev_jpeg, jpeg, name):
               '{"changed": 服装が明らかに変わっていればtrue、同じか判断できなければfalse, '
               '"say": "changedがtrueのときだけ、着替えに気づいた関西弁の一言（35文字以内。例:「あれ、着替えたん？その青いシャツもええやん」）。falseなら空文字"}')
     j = parse_json(ask_vlm(prompt, jpeg, extra_images=[prev_jpeg]))
-    return bool(j.get("changed")), str(j.get("say", "")).strip()
+    return bool(j.get("changed")), clean(j.get("say", ""))
 
 def vlm_clothes(jpeg, name):
     who = f"{name}さん" if name else "この人"
     prompt = ("この写真は小さなロボットが首を下に向けて、目の前の人の服装を撮ったものです。"
               f"{who}の服装（色・種類・柄・小物）について関西弁で一言コメントしてください。次のJSONだけを返してください。\n"
               '{"say": "服装への一言（35文字以内、褒めるか軽いツッコミ。具体的な色や種類に触れる。顔や背景の話はしない）"}')
-    return str(parse_json(ask_vlm(prompt, jpeg)).get("say", "")).strip()
+    return clean(parse_json(ask_vlm(prompt, jpeg)).get("say", ""))
 
 def vlm_unknown(jpeg):
     prompt = ("この写真は小さなロボットが目の前の人を撮ったものです。次のJSONだけを返してください。\n"
@@ -366,6 +409,10 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/":
             data = DASHBOARD.encode()
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+        elif u.path == "/chat/session" and q.get("sid"):   # the board fetches the opener of a pushed topic dialog
+            ses = sessions.get(q["sid"][0])
+            if not ses: return self._json(404, {"say": ""})
+            self._json(200, {"say": ses["history"][0][1], "listen": {"url": "/chat?sid=" + q["sid"][0], "seconds": 7, "prompt": ses["history"][0][1]}})
         elif u.path == "/profile": self._json(200, profile)
         elif u.path == "/topics": self._json(200, load_topics())
         elif u.path == "/topics/refresh":
@@ -392,6 +439,8 @@ class H(BaseHTTPRequestHandler):
             if person:
                 now = time.time(); today = time.strftime("%Y-%m-%d")
                 is_owner = bool(person.get("owner"))
+                if is_owner:
+                    global owner_seen_ts; owner_seen_ts = now
                 mode = "greet" if person.get("greet_date") != today else \
                        "checkin" if now - person.get("checkin_ts", 0) >= CHECKIN_INTERVAL_S else "quiet"
                 with lock:
@@ -426,8 +475,9 @@ class H(BaseHTTPRequestHandler):
                         else:
                             t = next((x for x in load_topics() if not x.get("shown")), None)
                             if t:
-                                resp["display"] = {"text": wrap_jp("📰 " + t["title"] + "\n" + t["summary"]), "size": 1, "ms": 25000}
-                                resp["say"] = topic_speech(t)      # read it out loud too
+                                opener, listen = start_topic_dialog(t)
+                                resp["say"] = opener; resp["listen"] = listen
+                                resp["display"] = {"text": wrap_jp("📰 " + t["title"]), "size": 1, "ms": 20000}
                                 tl = load_topics()
                                 for x in tl:
                                     if x["url"] == t["url"]: x["shown"] = True
@@ -435,7 +485,7 @@ class H(BaseHTTPRequestHandler):
                     print(f"visit: known {person['name']} sim={sim:.2f} quiet{' +question' if resp.get('listen') else ''}{' +topic' if resp.get('display') else ''} ({time.time()-t0:.1f}s)", flush=True)
                     return self._json(200, resp)
                 j = vlm_known(body, person["name"], mode)
-                say = str(j.get("say", "")).strip() or (f"{person['name']}さん{time_greeting()}ー" if mode == "greet" else "")
+                say = clean(j.get("say", "")) or (f"{person['name']}さん{time_greeting()}ー" if mode == "greet" else "")
                 show = None
                 if is_owner:
                     reps = pending_reports()
@@ -491,6 +541,19 @@ class H(BaseHTTPRequestHandler):
             log_event("clothes", name=name or None, say=say, photo=photo, changed=changed)
             print(f"clothes: {name or 'unknown'} changed={changed} say={say} ({time.time()-t0:.1f}s)", flush=True)
             return self._json(200, {"say": say, "changed": changed})
+        if u.path == "/chat":        # POST audio/wav ?sid=..  -> next turn of a topic dialog
+            sid = q.get("sid", [""])[0]
+            if sid not in sessions: return self._json(404, {"say": "ごめん、なんの話やったか忘れてもうた"})
+            text = transcribe(body)
+            if len(text.strip()) < 2:
+                say = "ま、そんなニュースがあったんやって。"; sessions.pop(sid, None)
+                return self._json(200, {"say": say, "heard": text})
+            say, cont = dialog_reply(sid, text)
+            print(f"chat: heard={text!r} -> {say!r} continue={cont}", flush=True)
+            resp = {"say": say, "heard": text}
+            if cont: resp["listen"] = {"url": f"/chat?sid={sid}", "seconds": 7, "prompt": say}
+            else: sessions.pop(sid, None)
+            return self._json(200, resp)
         if u.path == "/answer":      # POST audio/wav ?key=..&q=..  -> the owner's answer to a profile question
             key = q.get("key", ["misc"])[0]; question = q.get("q", [""])[0]
             text = transcribe(body)
@@ -535,7 +598,7 @@ h1{font-size:18px;margin:0}select,button{background:#222;color:#eee;border:1px s
 .person.owner{outline:2px solid #f5c542}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;padding:12px 20px}
 .card{background:#1c1c1c;border-radius:12px;overflow:hidden}.card img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;background:#000}
 .card .b{padding:8px 10px;font-size:13px}.t{color:#999;font-size:12px}.k{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;margin-right:6px}
-.k.sighting{background:#7a2b2b}.k.visit{background:#2b4a7a}.k.owner_photo{background:#7a6a2b}.k.learn{background:#2b7a4a}.k.clothes{background:#5a2b7a}
+.k.sighting{background:#7a2b2b}.k.visit{background:#2b4a7a}.k.owner_photo{background:#7a6a2b}.k.learn{background:#2b7a4a}.k.clothes{background:#5a2b7a}.k.topic,.k.chat{background:#2b6a7a}
 </style>
 <header><h1>Stack-chan ログ</h1><label>種類 <select id=kind><option value="">すべて</option><option value=visit>訪問</option><option value=sighting>ご主人以外</option><option value=owner_photo>ご主人の写真</option><option value=learn>名前学習</option><option value=clothes>服装</option></select></label>
 <label>人 <select id=who><option value="">すべて</option></select></label><button onclick="load()">更新</button></header>
@@ -554,7 +617,7 @@ async function load(){
      <button onclick="fetch('/owner?name='+encodeURIComponent('${p.name}')).then(load)">ご主人にする</button> <button onclick="if(confirm('${p.name} を忘れる？'))fetch('/forget?name='+encodeURIComponent('${p.name}')).then(load)">忘れる</button></div>`).join('');
   const k=document.getElementById('kind').value, w=who.value;
   document.getElementById('grid').innerHTML = ev.filter(e=>(!k||e.kind===k)&&(!w||(e.name||'unknown')===w)).map(e=>`<div class=card>${e.photo?`<a href="/photos/${e.photo}" target=_blank><img loading=lazy src="/photos/${e.photo}"></a>`:''}
-     <div class=b><span class="k ${e.kind}">${{visit:'訪問',sighting:'ご主人以外',owner_photo:'ご主人の写真',learn:'名前学習',clothes:'服装',answer:'プロフィール'}[e.kind]||e.kind}</span><b>${e.name||'知らない人'}</b> <span class=t>${e.time}${e.mode?' · '+e.mode:''}</span>
+     <div class=b><span class="k ${e.kind}">${{visit:'訪問',sighting:'ご主人以外',owner_photo:'ご主人の写真',learn:'名前学習',clothes:'服装',answer:'プロフィール',topic:'話題',chat:'雑談'}[e.kind]||e.kind}</span><b>${e.name||'知らない人'}</b> <span class=t>${e.time}${e.mode?' · '+e.mode:''}</span>
      ${e.say?`<div>「${e.say}」</div>`:''}${e.heard?`<div class=t>聞き取り: ${e.heard}</div>`:''}</div></div>`).join('');
 }
 function refreshTopics(){ fetch('/topics/refresh').then(load); }

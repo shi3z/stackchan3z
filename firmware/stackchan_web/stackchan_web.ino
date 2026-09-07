@@ -285,6 +285,29 @@ void clothesShot(const String& name) {
   if (say_.length()) { face.overlay(say_, 6000, 1); say(say_, "happy"); }
 }
 
+// Follow "listen" instructions from the brain: record, POST, speak the reply, repeat while the reply asks to listen again.
+void runDialog(JsonDocument& first) {
+  JsonDocument cur; cur.set(first);
+  for (int turn = 0; turn < 6 && cur["listen"].is<JsonObject>(); turn++) {
+    String lurl = cur["listen"]["url"] | ""; int secs = cur["listen"]["seconds"] | 4;
+    if (lurl.startsWith("/")) { int i = g_commentUrl.indexOf('/', 8); lurl = (i > 0 ? g_commentUrl.substring(0, i) : g_commentUrl) + lurl; }
+    waitSpeechDone();
+    face.overlay("きいてるで... (" + String(secs) + "秒)", secs * 1000 + 500, 2);
+    size_t wlen = 0; uint8_t* wav = recordWav(secs, &wlen);
+    if (!wav) return;
+    face.overlay("かんがえ中...", 30000, 2);
+    JsonDocument next;
+    int c2 = postJson(lurl, "audio/wav", wav, wlen, next, 300000);
+    free(wav);
+    String reply = next["say"] | "", heard = next["heard"] | "", nm = next["name"] | "";
+    Serial.printf("[listen] http %d heard=%s reply=%s\n", c2, heard.c_str(), reply.c_str());
+    if (nm.length()) g_lastName = nm;
+    if (reply.length()) { face.overlay(reply, 6000, 1); say(reply, "happy"); }
+    else { face.overlay("", 1, 1); return; }
+    cur.set(next);
+  }
+}
+
 // ---------- visit task (core 1, one-shot): photo -> brain -> greet / ask the name -> listen -> remember ----------
 void visitTask(void*) {
   size_t jlen = 0; uint8_t* jpg = captureJpeg(&jlen, 85);
@@ -305,36 +328,18 @@ void visitTask(void*) {
     say(say_, known ? "happy" : "neutral");
     if (show.length()) { showImageFromUrl(show, 8000); }   // e.g. the photo of a visitor being reported to the owner
   }
-  if (clothes && head.isAttached()) clothesShot(name);
-  // generic "listen" step: the brain wants an answer (name of a stranger, a profile question, ...)
-  if (doc["listen"].is<JsonObject>()) {
-    String lurl = doc["listen"]["url"] | ""; int secs = doc["listen"]["seconds"] | 4;
-    if (lurl.startsWith("/")) { int i = g_commentUrl.indexOf('/', 8); lurl = (i > 0 ? g_commentUrl.substring(0, i) : g_commentUrl) + lurl; }
-    waitSpeechDone();
-    face.overlay("きいてるで... (" + String(secs) + "秒)", secs * 1000 + 500, 2);
-    size_t wlen = 0; uint8_t* wav = recordWav(secs, &wlen);
-    if (wav) {
-      face.overlay("かんがえ中...", 30000, 2);
-      JsonDocument doc2;
-      int c2 = postJson(lurl, "audio/wav", wav, wlen, doc2, 300000);
-      free(wav);
-      String reply = doc2["say"] | "", heard = doc2["heard"] | "", nm = doc2["name"] | "";
-      Serial.printf("[listen] http %d heard=%s reply=%s\n", c2, heard.c_str(), reply.c_str());
-      if (nm.length()) g_lastName = nm;
-      if (reply.length()) { face.overlay(reply, 5000, 1); say(reply, "happy"); }
-      else face.overlay("", 1, 1);
-    }
-  }
+  runDialog(doc);                                          // questions / topic chat, right after the opener
   // the brain wants another look soon (e.g. to confirm the owner is really dozing)
   if (doc["recheck"].is<int>()) {
     uint32_t sec = doc["recheck"] | 0;
     if (sec > 0 && sec * 1000 < CFG_REVISIT_INTERVAL) g_lastComment = millis() - (CFG_REVISIT_INTERVAL - sec * 1000);
   }
-  // a topic to post on the screen (news picked for the owner)
+  // a topic headline to post on the screen
   if (doc["display"].is<JsonObject>()) {
     String t = doc["display"]["text"] | ""; int sz = doc["display"]["size"] | 1; uint32_t ms = doc["display"]["ms"] | 20000;
     if (t.length()) { waitSpeechDone(); face.overlay(t, ms, sz); }
   }
+  if (clothes && head.isAttached()) clothesShot(name);     // last: look down at the clothes, then back to the face
   g_commentBusy = false;
   vTaskDelete(nullptr);
 }
@@ -520,6 +525,26 @@ void handleComment() {
   g_reqCount++;
   bool ok = startComment();
   server.send(ok ? 202 : 409, "application/json", ok ? "{\"ok\":true,\"started\":true}" : "{\"ok\":false,\"busy\":true}");
+}
+
+// /api/dialog?path=<brain path>  : the brain starts a conversation (e.g. a news topic) on the board
+static String g_dialogPath;
+void dialogTask(void*) {
+  int i = g_commentUrl.indexOf('/', 8); String url = (i > 0 ? g_commentUrl.substring(0, i) : g_commentUrl) + g_dialogPath;
+  HTTPClient http; http.setTimeout(30000);
+  JsonDocument doc; int code = -1;
+  if (http.begin(url)) { code = http.GET(); if (code == 200) deserializeJson(doc, http.getString()); http.end(); }
+  String say_ = doc["say"] | "";
+  Serial.printf("[dialog] http %d say=%s\n", code, say_.c_str());
+  if (say_.length()) { g_holdUntil = millis() + 3000; face.overlay(say_, 6000, 1); say(say_, "happy"); runDialog(doc); }
+  g_commentBusy = false; vTaskDelete(nullptr);
+}
+void handleDialog() {
+  g_reqCount++;
+  if (!server.hasArg("path") || g_commentBusy) { server.send(409, "application/json", "{\"ok\":false,\"busy\":true}"); return; }
+  g_dialogPath = server.arg("path"); g_commentBusy = true;
+  if (xTaskCreatePinnedToCore(dialogTask, "dialog", 16384, nullptr, 1, nullptr, 1) != pdPASS) { g_commentBusy = false; server.send(500, "application/json", "{\"ok\":false}"); return; }
+  server.send(202, "application/json", "{\"ok\":true}");
 }
 
 // /api/face?mouth=0..1  : resting mouth openness
@@ -776,6 +801,7 @@ void setup() {
   server.on("/api/head", handleHead);
   server.on("/api/track", handleTrack);
   server.on("/api/comment", handleComment);
+  server.on("/api/dialog", handleDialog);
   server.on("/api/camera.jpg", handleCamera);
   server.on("/api/talk", handleTalk);
   server.on("/api/face", handleFace);

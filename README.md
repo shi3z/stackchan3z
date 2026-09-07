@@ -21,7 +21,8 @@ greets them in Kansai dialect via a VLM, and is reachable from anywhere on your 
   - ご主人がうたた寝していたら「風邪ひくで。ベッド行きな」と促す（両目が閉じて姿勢が崩れている、を5分以上空けて2回確認したときだけ。30分に1回まで）。
 - **服装**: 顔を認識したら首を下に向けて服を撮影し、その日最初は服のコメント。以後は前回の服の写真と比べて、着替えていれば「あれ、着替えたん？」と指摘、同じなら黙る。撮り終えたら顔に戻る。
 - **プロフィール収集**: ご主人と話すタイミングで（2時間に1回まで）仕事・趣味・住まい・会社の場所などを1問ずつ聞き、答えを録音→Whisper→LLMで要点抽出して `profile.json` に保存。定番の質問が埋まったら LLM が次の質問を考える。
-- **話題の掲示**: プロフィールから LLM が検索語を作り、Google ニュース RSS を検索、関係が深そうな記事を最大3件選んで関西弁で要約。3時間ごとに更新し、ご主人と会話していないときにボードの画面に掲示。ダッシュボードにも一覧。
+- **ニュース雑談**: プロフィールから LLM が検索語を作り、Google ニュース RSS を検索、関係が深そうな記事を最大3件選んで要約（3時間ごと）。
+  ご主人が近くにいて会話中でないときに「○○って知ってる？〜らしいんやけど」と自然に切り出し、返答を聞いて記事の範囲で答える雑談を最大3往復。見出しは画面にも表示。ダッシュボードに一覧。
 - **ダッシュボード**: Mac の `http://<mac>:9002/`（tailnet なら `https://<mac>.<tailnet>.ts.net:8444/`）で、写真と発言の履歴、人物一覧（ご主人設定・削除）を一覧表示。
 - **喋る**: 音声合成は Tsukasa-Speech（StyleTTS2）API か、macOS の `say`（設定不要）。
 - **HTTP API**: 喋る・画面表示・首振り・写真・顔追従設定など。tailscale serve で tailnet 全体から呼べます。
@@ -126,6 +127,7 @@ STACKCHAN_URL=https://<mac>.<tailnet>.ts.net:8443 python3 tools/stackchan_client
 | `/api/camera.jpg?q=80` | QVGA JPEG |
 | `/api/track?on=1&auto=1&head=1&mirror=0&pansign=-1&tiltsign=-1&search=1` | 顔追従・自動訪問・首追従・方向・探索の設定と状態 |
 | `/api/comment` | 今すぐ訪問（写真→顔認識→挨拶 or 名前確認）を実行 |
+| `/api/dialog?path=/chat/session?sid=..` | 脳が用意した会話をボード側で開始（喋る→聞く→送る を返答が続く限り繰り返す） |
 | `/api/fetch?url=...` | ボードから URL を GET |
 
 `tools/stackchan_client.py` が全部を包んでいます（標準ライブラリのみ）。
@@ -147,13 +149,14 @@ python3 tools/stackchan_client.py photo shot.jpg
 | `POST /clothes?name=..` (image/jpeg) | 服装の写真 → その日初回はコメント、2回目以降は前回と比較して変化だけ指摘 → `{say, changed}` |
 | `POST /answer?key=..&q=..` (audio/wav) | プロフィール質問への答え → 要点を `profile.json` に保存 → `{say}` |
 | `GET /profile` / `GET /topics` / `GET /topics/refresh` | プロフィール / 話題一覧 / 今すぐ検索 |
+| `POST /chat?sid=..` (audio/wav) / `GET /chat/session?sid=..` | ニュース雑談の次の一手（返答→LLM→`{say, listen?}`） / 脳から始めた雑談の切り出し取得 |
 | `GET /` / `GET /events.json` / `GET /photos/<file>` | ダッシュボード / 履歴 JSON / 保存写真 |
 
 記憶は `~/Library/Application Support/stackchan/faces.json`（顔特徴量・ご主人フラグ・挨拶した日・様子見の時刻・服の写真）、
 プロフィールは `profile.json`、話題は `topics.json`、履歴は `events.jsonl`、写真は `photos/`。直近の録音（`last_learn.wav`）も残ります。
 
-`/visit` の応答には、ボードへの指示として `listen`（質問を喋って録音し、そのURLへ送る）、`display`（画面に掲示する文）、
-`show`（表示する写真）、`clothes`（首を下げて服を撮る）、`recheck`（何秒後にもう一度見るか）が含まれます。
+`/visit` の応答には、ボードへの指示として `listen`（質問を喋って録音し、そのURLへ送る。返答にまた `listen` があれば続ける）、
+`display`（画面に掲示する文）、`show`（表示する写真）、`clothes`（首を下げて服を撮る）、`recheck`（何秒後にもう一度見るか）が含まれます。
 
 ## シリアルコマンド
 
