@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>stackchan-tts</string>
+  <key>ProgramArguments</key><array>
+    <string>__PY__</string>
+    <string>__REPO__/server/tts_proxy.py</string>
+    <string>9001</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>STACKCHAN_TTS_API</key><string>__TTS_API__</string>
+    <key>STACKCHAN_TTS_BACKEND</key><string>__TTS_BACKEND__</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/stackchan-tts.log</string>
+  <key>StandardErrorPath</key><string>/tmp/stackchan-tts.log</string>
+</dict></plist>

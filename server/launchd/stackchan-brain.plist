@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>stackchan-brain</string>
+  <key>ProgramArguments</key><array>
+    <string>__PY_ML__</string>
+    <string>__REPO__/server/brain.py</string>
+    <string>9002</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>STACKCHAN_VLM_URL</key><string>__VLM_URL__</string>
+    <key>STACKCHAN_VLM_MODEL</key><string>__VLM_MODEL__</string>
+    <key>HF_HUB_OFFLINE</key><string>1</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/stackchan-brain.log</string>
+  <key>StandardErrorPath</key><string>/tmp/stackchan-brain.log</string>
+</dict></plist>
