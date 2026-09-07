@@ -260,11 +260,11 @@ void visitTask(void*) {
   int code = postJson(g_commentUrl, "image/jpeg", jpg, jlen, doc, 120000);
   free(jpg);
   if (code != 200) { Serial.printf("[visit] http %d\n", code); g_commentBusy = false; vTaskDelete(nullptr); return; }
-  bool vr = doc["vr"] | false, known = doc["known"] | false, ask = doc["ask"] | false;
+  bool known = doc["known"] | false, ask = doc["ask"] | false;
   String say_ = doc["say"] | "", name = doc["name"] | "", faceId = doc["face_id"] | "";
-  Serial.printf("[visit] person=%d vr=%d known=%d name=%s ask=%d say=%s\n", (int)(doc["person"] | false), vr, known, name.c_str(), ask, say_.c_str());
-  if (known && !say_.length() && !vr) face.overlay(name + "さん", 2500, 1);
-  if (vr || !say_.length()) { g_commentBusy = false; vTaskDelete(nullptr); return; }
+  Serial.printf("[visit] person=%d known=%d name=%s ask=%d say=%s\n", (int)(doc["person"] | false), known, name.c_str(), ask, say_.c_str());
+  if (known && !say_.length()) face.overlay(name + "さん", 2500, 1);
+  if (!say_.length()) { g_commentBusy = false; vTaskDelete(nullptr); return; }
   g_lastCommentText = say_; if (known) g_lastName = name;
   face.overlay(known ? (name + "さん  " + say_) : say_, 6000, 1);
   say(say_, known ? "happy" : "neutral");

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stack-chan brain: face recognition + name learning + VLM greeting.
 Needs: insightface, onnxruntime, opencv-python, numpy, mlx-whisper (Apple Silicon). VLM = any Ollama vision model.
-  POST /visit  (image/jpeg)            -> {"person","vr","known","name","face_id","say","ask"}
+  POST /visit  (image/jpeg)            -> {"person","known","name","face_id","say","ask"}
   POST /learn?face_id=..  (audio/wav)  -> {"name","say"}     (whisper -> name extraction -> remember the face)
   GET  /people                         -> known people
   GET  /forget?name=..                 -> delete a person
@@ -65,9 +65,6 @@ def parse_json(txt):
     try: return json.loads(m.group(0)) if m else {}
     except Exception: return {}
 
-HEADWEAR = ('"headwear": "頭部に装着しているもの。なし / 帽子 / 眼鏡 / VRヘッドセット のいずれか。'
-            '目や顔の上半分を覆う箱型・ゴーグル型の機器（Meta Quest、Apple Vision Proなど）はすべて VRヘッドセット と答える", '
-            '"vr": headwearがVRヘッドセットならtrue')
 
 def time_greeting():
     h = time.localtime().tm_hour
@@ -84,12 +81,12 @@ def vlm_known(jpeg, name, mode):
                 f'例: 「{name}さん、疲れてない？少し休んだら？」「{name}さん、ええ顔してるやん。調子よさそうやな」 実際の表情・顔色・目の様子に合わせる"')
     prompt = (f"この写真は小さなロボットが目の前の人を撮ったものです。この人は「{name}」さんです。"
               "顔色・表情・目の様子から今日の調子や機嫌を読み取り、次のJSONだけを返してください。\n"
-              '{"person": true, ' + HEADWEAR + ', ' + want + '}')
+              '{"person": true, ' + want + '}')
     return parse_json(ask_vlm(prompt, jpeg))
 
 def vlm_unknown(jpeg):
     prompt = ("この写真は小さなロボットが目の前の人を撮ったものです。次のJSONだけを返してください。\n"
-              '{"person": 人物が写っていればtrue, ' + HEADWEAR + '}')
+              '{"person": 人物が写っていればtrue}')
     return parse_json(ask_vlm(prompt, jpeg))
 
 def extract_name(text):
@@ -115,7 +112,6 @@ def transcribe(wav_bytes):
         return r["text"].strip()
     finally: os.unlink(path)
 
-def is_vr(j): return bool(j.get("vr")) or any(k in str(j.get("headwear", "")) for k in ("VR", "ヘッドセット", "ゴーグル"))
 
 # ---------- HTTP ----------
 class H(BaseHTTPRequestHandler):
@@ -146,8 +142,8 @@ class H(BaseHTTPRequestHandler):
             emb = embed(body)
             if emb is None:
                 j = vlm_unknown(body)
-                if not j.get("person") or is_vr(j): return self._json(200, {"person": bool(j.get("person")), "vr": is_vr(j), "known": False, "say": "", "ask": False})
-                return self._json(200, {"person": True, "vr": False, "known": False, "say": "顔がよう見えへんわ。もうちょい近う寄ってや", "ask": False})
+                if not j.get("person"): return self._json(200, {"person": False, "known": False, "say": "", "ask": False})
+                return self._json(200, {"person": True, "known": False, "say": "顔がよう見えへんわ。もうちょい近う寄ってや", "ask": False})
             person, sim = match(emb)
             if person:
                 now = time.time(); today = time.strftime("%Y-%m-%d")
@@ -159,27 +155,24 @@ class H(BaseHTTPRequestHandler):
                     save_db(people)
                 if mode == "quiet":
                     print(f"visit: known {person['name']} sim={sim:.2f} quiet ({time.time()-t0:.1f}s)", flush=True)
-                    return self._json(200, {"person": True, "vr": False, "known": True, "name": person["name"], "sim": round(sim, 2), "say": "", "ask": False, "mode": mode})
+                    return self._json(200, {"person": True, "known": True, "name": person["name"], "sim": round(sim, 2), "say": "", "ask": False, "mode": mode})
                 j = vlm_known(body, person["name"], mode)
-                if is_vr(j): return self._json(200, {"person": True, "vr": True, "known": True, "name": person["name"], "say": "", "ask": False})
                 say = str(j.get("say", "")).strip() or (f"{person['name']}さん{time_greeting()}ー" if mode == "greet" else "")
                 with lock:
                     if mode == "greet": person["greet_date"] = today
                     person["checkin_ts"] = now; save_db(people)
                 print(f"visit: known {person['name']} sim={sim:.2f} {mode} say={say} ({time.time()-t0:.1f}s)", flush=True)
-                return self._json(200, {"person": True, "vr": False, "known": True, "name": person["name"], "sim": round(sim, 2), "say": say, "ask": False, "mode": mode})
+                return self._json(200, {"person": True, "known": True, "name": person["name"], "sim": round(sim, 2), "say": say, "ask": False, "mode": mode})
             # unknown: do not pester the same stranger repeatedly
             now = time.time()
             asked[:] = [(e, t) for e, t in asked if now - t < ASK_AGAIN_S]
             if any(float(np.dot(emb, e)) >= SIM_THRESHOLD for e, t in asked):
                 print(f"visit: unknown (asked recently) sim={sim:.2f} ({time.time()-t0:.1f}s)", flush=True)
-                return self._json(200, {"person": True, "vr": False, "known": False, "say": "", "ask": False})
-            j = vlm_unknown(body)
-            if is_vr(j): return self._json(200, {"person": True, "vr": True, "known": False, "say": "", "ask": False})
+                return self._json(200, {"person": True, "known": False, "say": "", "ask": False})
             fid = uuid.uuid4().hex[:8]
             with lock: pending[fid] = {"emb": emb.tolist(), "t": time.time()}; asked.append((emb, time.time()))
             print(f"visit: unknown sim={sim:.2f} face_id={fid} ({time.time()-t0:.1f}s)", flush=True)
-            return self._json(200, {"person": True, "vr": False, "known": False, "face_id": fid, "say": "あんた、だれ？", "ask": True})
+            return self._json(200, {"person": True, "known": False, "face_id": fid, "say": "あんた、だれ？", "ask": True})
         if u.path == "/learn":
             fid = q.get("face_id", [""])[0]
             pend = pending.get(fid)

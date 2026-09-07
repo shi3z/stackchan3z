@@ -13,7 +13,6 @@ greets them in Kansai dialect via a VLM, and is reachable from anywhere on your 
 - **顔を見つけたら**: 首を止めて写真を撮り、Mac の「脳」へ送信。
   - 知らない人 →「あんた、だれ？」と聞き、4秒録音 → Whisper で聞き取り → 名前と顔を記憶（「○○さんやな。覚えたで！」）。
   - 知っている人 → その日初めてなら時間帯に合わせた挨拶＋顔の様子の一言。以後は1時間に1回だけ「疲れてない？少し休んだら？」のような気遣い。それ以外は黙る。
-  - VR ヘッドセットをかぶっていたら黙る。
 - **喋る**: 音声合成は Tsukasa-Speech（StyleTTS2）API か、macOS の `say`（設定不要）。
 - **HTTP API**: 喋る・画面表示・首振り・写真・顔追従設定など。tailscale serve で tailnet 全体から呼べます。
 
@@ -130,7 +129,7 @@ python3 tools/stackchan_client.py photo shot.jpg
 
 | endpoint | 内容 |
 |---|---|
-| `POST /visit` (image/jpeg) | 顔照合 → `{known, name, say, ask, face_id, vr}` |
+| `POST /visit` (image/jpeg) | 顔照合 → `{known, name, say, ask, face_id}` |
 | `POST /learn?face_id=..` (audio/wav) | 録音 → Whisper → LLM で名前抽出 → 記憶 → `{name, say}` |
 | `GET /people` / `GET /forget?name=..` | 記憶した人の一覧 / 削除 |
 
