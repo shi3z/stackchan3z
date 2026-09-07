@@ -8,6 +8,7 @@ Needs: insightface, onnxruntime, opencv-python, numpy, mlx-whisper (Apple Silico
   GET  /people                         -> known people (owner flag)
   GET  /forget?name=..  /owner?name=.. -> delete a person / make someone the owner ("ご主人")
   POST /answer?key=..&q=..(audio/wav)  -> the owner's answer to a profile question -> stored in profile.json
+  POST /smalltalk?key=lunch|evening&q=.. (audio/wav) -> answer to the noon / evening question -> reply + stored in profile["daily"]
   GET  /profile  /topics  /topics/refresh -> owner profile facts / news topics picked for the owner / search now
   GET  /weather                        -> today's real weather (Open-Meteo) + the morning facts line used in the first greeting
   POST /chat?sid=..  (audio/wav)       -> next turn of a conversation about a topic ("○○って知ってる？"), up to 3 turns
@@ -212,6 +213,47 @@ def morning_facts():
         txt += " " + (temp_trend(w) or umb)
     except Exception as e: print("weather failed:", e, flush=True)
     return txt.strip()
+
+# ---------- time-of-day small talk (lunch / evening) ----------
+SMALLTALK = [
+    {"key": "lunch",   "start": (11, 30), "end": (13, 30),
+     "theme": "お昼ごはん。まだなら何を食べるか、食べたなら何を食べたか聞く。季節や今日の天気に合った提案や一言を絡める（例: 暑い日は冷たいもん、寒い日はあったかいもん、雨なら出前）",
+     "fallback": "お昼食べた？何食べるん？"},
+    {"key": "evening", "start": (17, 30), "end": (20, 30),
+     "theme": "今日の夜の予定。飲みに行くのか、休肝日にするのか、家で何か食べるのか聞く。曜日（金曜なら週末気分、月曜なら控えめ）や天気を絡める",
+     "fallback": "今日は飲みに行くん？それとも休肝日？"},
+]
+def season():
+    m = time.localtime().tm_mon
+    return {12: "冬", 1: "冬", 2: "冬", 3: "春", 4: "春", 5: "春", 6: "初夏・梅雨", 7: "夏", 8: "夏", 9: "初秋", 10: "秋", 11: "晩秋"}[m]
+
+def daily_slot(now_t=None):
+    """The small-talk slot active now, if any."""
+    lt = time.localtime(now_t or time.time()); hm = (lt.tm_hour, lt.tm_min)
+    for st in SMALLTALK:
+        if st["start"] <= hm <= st["end"]: return st
+    return None
+
+def smalltalk_question(st):
+    today_w = ""
+    try:
+        w = weather(); today_w = f"{w['place']}は{w['desc']}、最高{round(w['tmax'])}度"
+    except Exception: pass
+    lt = time.localtime()
+    prompt = ("あなたは机の上の小さなロボット「スタックちゃん」。関西弁でご主人に話しかけます。\n"
+              f"今は{lt.tm_hour}時{lt.tm_min:02d}分、{'月火水木金土日'[lt.tm_wday]}曜日、季節は{season()}。天気: {today_w or '不明'}。\n"
+              "ご主人について: " + profile_summary().replace("\n", " ") + "\n"
+              f"テーマ: {st['theme']}\n35文字以内の自然な問いかけを1つ作って、次のJSONだけを返してください。\n" + '{"say": "問いかけ"}')
+    return clean(parse_json(ask_vlm(prompt, None, 60)).get("say", "")) or st["fallback"]
+
+def smalltalk_reply(st, question, answer):
+    prompt = ("あなたは机の上の小さなロボット「スタックちゃん」。関西弁でご主人と雑談中です。\n"
+              f"あなたの質問: {question}\nご主人の答え（音声認識なので誤変換あり）: {answer}\n季節: {season()}\n"
+              "ご主人について: " + profile_summary().replace("\n", " ") + "\n"
+              "答えに対する気の利いた一言（40文字以内、関西弁、押しつけがましくない）と、答えの要点（15文字以内）を次のJSONだけで返してください。\n"
+              '{"say": "一言", "gist": "要点"}')
+    j = parse_json(ask_vlm(prompt, None, 60))
+    return clean(j.get("say", "")) or "そうなんや。ええやん。", clean(j.get("gist", "")) or answer[:15]
 
 # ---------- news / topics for the owner ----------
 def load_topics():
@@ -463,6 +505,18 @@ class H(BaseHTTPRequestHandler):
         profile["last_ask"] = now; profile["asked"][key] = now; save_profile(profile)
         return {"url": f"/answer?key={urllib.parse.quote(key)}&q={urllib.parse.quote(q)}", "seconds": 6, "prompt": q}
 
+    def _maybe_smalltalk(self, now):
+        st = daily_slot(now)
+        if not st: return None
+        today = time.strftime("%Y-%m-%d"); daily = profile.setdefault("daily", {})
+        if st["key"] in daily.get(today, {}): return None
+        try: q = smalltalk_question(st)
+        except Exception as e: print("smalltalk error:", e, flush=True); q = st["fallback"]
+        daily.setdefault(today, {})[st["key"]] = {"q": q, "a": "", "time": time.strftime("%H:%M")}
+        for d in [d for d in daily if d < time.strftime("%Y-%m-%d", time.localtime(now - 30 * 86400))]: daily.pop(d, None)
+        save_profile(profile)
+        return {"url": f"/smalltalk?key={st['key']}&q={urllib.parse.quote(q)}", "seconds": 7, "prompt": q}
+
     def do_GET(self):
         u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
         if u.path == "/people":
@@ -550,7 +604,7 @@ class H(BaseHTTPRequestHandler):
                 if mode == "quiet":
                     resp = {"person": True, "known": True, "owner": is_owner, "name": person["name"], "sim": round(sim, 2), "say": "", "ask": False, "mode": mode, "clothes": True}
                     if is_owner:
-                        listen = self._maybe_question(now)
+                        listen = self._maybe_question(now) or self._maybe_smalltalk(now)
                         if listen: resp["say"] = f"{person['name']}さん、{listen['prompt']}"; resp["listen"] = listen
                         else:
                             t = next((x for x in load_topics() if not x.get("shown")), None)
@@ -583,7 +637,7 @@ class H(BaseHTTPRequestHandler):
                     person["checkin_ts"] = now; save_db(people)
                 resp = {"person": True, "known": True, "owner": is_owner, "name": person["name"], "sim": round(sim, 2), "say": say, "ask": False, "mode": mode, "show": show, "clothes": True}
                 if is_owner:
-                    listen = self._maybe_question(now)
+                    listen = self._maybe_question(now) or self._maybe_smalltalk(now)
                     if listen: say = (say + " ところで、" if say else "") + listen["prompt"]; resp["say"] = say; resp["listen"] = listen
                     global talking_until; talking_until = now + 120
                 log_event("visit", name=person["name"], known=True, owner=is_owner, mode=mode, say=say, photo=photo)
@@ -636,6 +690,16 @@ class H(BaseHTTPRequestHandler):
             if cont: resp["listen"] = {"url": f"/chat?sid={sid}", "seconds": 7, "prompt": say}
             else: sessions.pop(sid, None)
             return self._json(200, resp)
+        if u.path == "/smalltalk":   # POST audio/wav ?key=lunch|evening&q=..
+            key = q.get("key", ["misc"])[0]; question = q.get("q", [""])[0]
+            text = transcribe(body)
+            if len(text.strip()) < 2: return self._json(200, {"heard": text, "say": "ま、ええか。また聞くわ"})
+            say, gist = smalltalk_reply(next((x for x in SMALLTALK if x["key"] == key), SMALLTALK[0]), question, text)
+            today = time.strftime("%Y-%m-%d")
+            profile.setdefault("daily", {}).setdefault(today, {})[key] = {"q": question, "a": gist, "heard": text, "time": time.strftime("%H:%M")}; save_profile(profile)
+            log_event("smalltalk", name=(owner() or {}).get("name"), heard=text, say=f"{question} -> {gist} / {say}")
+            print(f"smalltalk: {key} heard={text!r} -> {gist!r} say={say!r}", flush=True)
+            return self._json(200, {"heard": text, "say": say})
         if u.path == "/answer":      # POST audio/wav ?key=..&q=..  -> the owner's answer to a profile question
             key = q.get("key", ["misc"])[0]; question = q.get("q", [""])[0]
             text = transcribe(body)
@@ -691,7 +755,8 @@ h1{font-size:18px;margin:0}select,button{background:#222;color:#eee;border:1px s
 <script>
 async function load(){
   const [ev, ppl, pr, tp] = await Promise.all([fetch('/events.json?limit=1000').then(r=>r.json()), fetch('/people').then(r=>r.json()), fetch('/profile').then(r=>r.json()), fetch('/topics').then(r=>r.json())]);
-  document.getElementById('profile').innerHTML = '<div class=person><b>ご主人のプロフィール</b> ' + (Object.entries(pr.facts||{}).map(([k,v])=>`<div>${v.q} → <b>${v.a}</b> <span class=t>${v.time}</span> <button onclick="fetch('/forget_fact?key='+encodeURIComponent('${k}')).then(load)">×</button></div>`).join('')||'<span class=t>まだ何も聞いていません</span>') + '</div>';
+  const daily = Object.entries(pr.daily||{}).sort().slice(-3).reverse().map(([d,v])=>`<div class=t>${d}: `+Object.entries(v).map(([k,x])=>`${x.q} → <b>${x.a||'（未回答）'}</b>`).join(' ／ ')+'</div>').join('');
+  document.getElementById('profile').innerHTML = '<div class=person><b>ご主人のプロフィール</b> ' + (Object.entries(pr.facts||{}).map(([k,v])=>`<div>${v.q} → <b>${v.a}</b> <span class=t>${v.time}</span> <button onclick="fetch('/forget_fact?key='+encodeURIComponent('${k}')).then(load)">×</button></div>`).join('')||'<span class=t>まだ何も聞いていません</span>') + daily + '</div>';
   document.getElementById('topics').innerHTML = '<div class=person><b>話題</b> <button onclick="refreshTopics()">今すぐ探す</button>' + (tp.slice(0,10).map(t=>`<div>📰 <a href="${t.url}" target=_blank style="color:#9cf">${t.title}</a> <span class=t>${t.source} · ${t.time}${t.shown?' · 掲示済':''}</span><div>${t.summary}</div></div>`).join('')||'<span class=t>まだありません</span>') + '</div>';
   const who=document.getElementById('who'); const cur=who.value; const names=[...new Set(ev.map(e=>e.name||'unknown'))];
   who.innerHTML='<option value="">すべて</option>'+names.map(n=>`<option ${n===cur?'selected':''}>${n}</option>`).join('');
@@ -699,7 +764,7 @@ async function load(){
      <button onclick="fetch('/owner?name='+encodeURIComponent('${p.name}')).then(load)">ご主人にする</button> <button onclick="if(confirm('${p.name} を忘れる？'))fetch('/forget?name='+encodeURIComponent('${p.name}')).then(load)">忘れる</button></div>`).join('');
   const k=document.getElementById('kind').value, w=who.value;
   document.getElementById('grid').innerHTML = ev.filter(e=>(!k||e.kind===k)&&(!w||(e.name||'unknown')===w)).map(e=>`<div class=card>${e.photo?`<a href="/photos/${e.photo}" target=_blank><img loading=lazy src="/photos/${e.photo}"></a>`:''}
-     <div class=b><span class="k ${e.kind}">${{visit:'訪問',sighting:'ご主人以外',owner_photo:'ご主人の写真',learn:'名前学習',clothes:'服装',answer:'プロフィール',topic:'話題',chat:'雑談'}[e.kind]||e.kind}</span><b>${e.name||'知らない人'}</b> <span class=t>${e.time}${e.mode?' · '+e.mode:''}</span>
+     <div class=b><span class="k ${e.kind}">${{visit:'訪問',sighting:'ご主人以外',owner_photo:'ご主人の写真',learn:'名前学習',clothes:'服装',answer:'プロフィール',topic:'話題',chat:'雑談',smalltalk:'ひとこと'}[e.kind]||e.kind}</span><b>${e.name||'知らない人'}</b> <span class=t>${e.time}${e.mode?' · '+e.mode:''}</span>
      ${e.say?`<div>「${e.say}」</div>`:''}${e.heard?`<div class=t>聞き取り: ${e.heard}</div>`:''}</div></div>`).join('');
 }
 function refreshTopics(){ fetch('/topics/refresh').then(load); }

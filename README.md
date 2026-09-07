@@ -21,6 +21,7 @@ greets them in Kansai dialect via a VLM, and is reachable from anywhere on your 
   - ご主人の写真を1日1回保存（その日最初に見つけたとき）。
   - ご主人がうたた寝していたら「風邪ひくで。ベッド行きな」と促す（両目が閉じて姿勢が崩れている、を5分以上空けて2回確認したときだけ。30分に1回まで）。
 - **服装**: 顔を認識したら首を下に向けて服を撮影し、その日最初は服のコメント。以後は前回の服の写真と比べて、着替えていれば「あれ、着替えたん？」と指摘、同じなら黙る。撮り終えたら顔に戻る。
+- **昼と夕方の声かけ**: 昼（11:30〜13:30）は「お昼食べた？何食べるん？」を季節や天気に合わせて（雨なら出前、暑い日は冷たいもの等）、夕方（17:30〜20:30）は「今日は飲みに行くん？休肝日？」を曜日や天気を絡めて、それぞれ1日1回聞き、答えに一言返して記録（ダッシュボードのプロフィール欄に直近3日分）。
 - **プロフィール収集**: ご主人と話すタイミングで（2時間に1回まで）仕事・趣味・住まい・会社の場所などを1問ずつ聞き、答えを録音→Whisper→LLMで要点抽出して `profile.json` に保存。定番の質問が埋まったら LLM が次の質問を考える。
 - **ニュース雑談**: プロフィールから LLM が検索語を作り、Google ニュース RSS を検索、関係が深そうな記事を最大3件選んで要約（3時間ごと）。
   ご主人が近くにいて会話中でないときに「○○って知ってる？〜らしいんやけど」と自然に切り出し、返答を聞いて記事の範囲で答える雑談を最大3往復。見出しは画面にも表示。ダッシュボードに一覧。
@@ -149,6 +150,7 @@ python3 tools/stackchan_client.py photo shot.jpg
 | `GET /people` / `GET /forget?name=..` / `GET /owner?name=..` | 記憶した人の一覧 / 削除 / ご主人に設定 |
 | `POST /clothes?name=..` (image/jpeg) | 服装の写真 → その日初回はコメント、2回目以降は前回と比較して変化だけ指摘 → `{say, changed}` |
 | `POST /answer?key=..&q=..` (audio/wav) | プロフィール質問への答え → 要点を `profile.json` に保存 → `{say}` |
+| `POST /smalltalk?key=lunch\|evening&q=..` (audio/wav) | 昼・夕方の声かけへの答え → 一言返して `profile.json` の daily に記録 |
 | `GET /profile` / `GET /topics` / `GET /topics/refresh` | プロフィール / 話題一覧 / 今すぐ検索 |
 | `GET /weather` | 今日の天気（Open-Meteo）と、朝の挨拶に使う事実の文 |
 | `POST /chat?sid=..` (audio/wav) / `GET /chat/session?sid=..` | ニュース雑談の次の一手（返答→LLM→`{say, listen?}`） / 脳から始めた雑談の切り出し取得 |
@@ -172,7 +174,7 @@ python3 tools/stackchan_client.py photo shot.jpg
 - `firmware/stackchan_web/config.h`: 首の方向符号、探索の時間、再確認間隔、音量、挨拶文。
 - `firmware/stackchan_web/face.h`: 目の形・まばたき・視線。
 - `server/brain.py`: 挨拶/様子見/居眠りのプロンプト、`CHECKIN_INTERVAL_S`（様子見の間隔）、`SIM_THRESHOLD`（同一人物判定）、
-  `REPORT_COOLDOWN_S`（ご主人以外の報告間隔）、`NAG_INTERVAL_S`（居眠り注意の間隔）、`PROFILE_QUESTIONS`（定番の質問）。
+  `REPORT_COOLDOWN_S`（ご主人以外の報告間隔）、`NAG_INTERVAL_S`（居眠り注意の間隔）、`PROFILE_QUESTIONS`（定番の質問）、`SMALLTALK`（昼・夕方の声かけの時間帯とテーマ）。
   環境変数 `STACKCHAN_OWNER_PHOTO_INTERVAL`（ご主人の写真間隔、秒）、`STACKCHAN_ASK_INTERVAL`（質問の間隔）、`STACKCHAN_TOPIC_INTERVAL`（話題更新の間隔）、
   `STACKCHAN_BOARD_URL`（話題を掲示するボードの URL。`install_services.sh` が BOARD_IP から設定）、`STACKCHAN_LAT` / `STACKCHAN_LON` / `STACKCHAN_PLACE`（天気の既定地点）。
 - `server/tts_proxy.py`: TTS バックエンド。`STACKCHAN_SAY_VOICE` で `say` の声を変更。
