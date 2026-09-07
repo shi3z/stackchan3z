@@ -6,7 +6,7 @@
 #define CFG_TTS_URL      "http://192.168.1.10:9001/say"      // server/tts_proxy.py on your Mac
 #define CFG_BRAIN_URL    "http://192.168.1.10:9002/visit"    // server/brain.py on your Mac (/learn is derived)
 #define CFG_FETCH_TARGET ""                                  // default URL for /api/fetch (optional)
-#define CFG_GREETING     "こんにちはー。今日もええ天気やなあ。"     // spoken once after Wi-Fi connects
+#define CFG_GREETING     "こんにちはー。スタックチャンやで。"        // spoken once after Wi-Fi connects (weather is NOT faked here)
 #define CFG_SPEAKER_VOLUME 200                               // 0..255
 
 // Head (Feetech SCS bus servos of the official M5Stack StackChan)

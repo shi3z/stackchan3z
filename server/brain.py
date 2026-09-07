@@ -9,6 +9,7 @@ Needs: insightface, onnxruntime, opencv-python, numpy, mlx-whisper (Apple Silico
   GET  /forget?name=..  /owner?name=.. -> delete a person / make someone the owner ("ご主人")
   POST /answer?key=..&q=..(audio/wav)  -> the owner's answer to a profile question -> stored in profile.json
   GET  /profile  /topics  /topics/refresh -> owner profile facts / news topics picked for the owner / search now
+  GET  /weather                        -> today's real weather (Open-Meteo) + the morning facts line used in the first greeting
   POST /chat?sid=..  (audio/wav)       -> next turn of a conversation about a topic ("○○って知ってる？"), up to 3 turns
   GET  /chat/session?sid=..            -> opener + listen instruction for a dialog the brain pushed to the board
   GET  /                               -> dashboard: photos and what was said, newest first
@@ -35,6 +36,9 @@ ASK_INTERVAL_S = int(os.environ.get("STACKCHAN_ASK_INTERVAL", 7200))      # prof
 TOPIC_INTERVAL_S = int(os.environ.get("STACKCHAN_TOPIC_INTERVAL", 3 * 3600))  # look for news this often
 BOARD_URL = os.environ.get("STACKCHAN_BOARD_URL", "")                      # e.g. http://192.168.1.50 (to push topics to the screen)
 PROFILE_PATH = os.path.join(DB_DIR, "profile.json")
+WEATHER_LOG = os.path.join(DB_DIR, "weather_log.json")
+DEFAULT_LAT = float(os.environ.get("STACKCHAN_LAT", "35.68")); DEFAULT_LON = float(os.environ.get("STACKCHAN_LON", "139.69"))  # Tokyo
+DEFAULT_PLACE = os.environ.get("STACKCHAN_PLACE", "東京")
 TOPICS_PATH = os.path.join(DB_DIR, "topics.json")
 talking_until = 0.0           # while > now, the owner is in a conversation: do not push topics to the screen
 asked = []                    # [(emb, t)] unknown faces we already asked
@@ -134,6 +138,80 @@ def extract_answer(question, text):
               f"答え: {text}\n質問への答えの要点だけを短く（20文字以内）取り出して、次のJSONだけを返してください。答えていない・分からない場合はanswerを空にしてください。\n"
               '{"answer": "要点"}')
     return clean(parse_json(ask_vlm(prompt, None, 60)).get("answer", ""))
+
+# ---------- real weather + calendar facts for the morning greeting ----------
+WMO = {0: "快晴", 1: "晴れ", 2: "晴れ時々曇り", 3: "曇り", 45: "霧", 48: "霧", 51: "小雨", 53: "小雨", 55: "雨", 56: "みぞれ", 57: "みぞれ",
+       61: "雨", 63: "雨", 65: "大雨", 66: "みぞれ", 67: "みぞれ", 71: "雪", 73: "雪", 75: "大雪", 77: "雪", 80: "にわか雨", 81: "にわか雨",
+       82: "激しいにわか雨", 85: "にわか雪", 86: "にわか雪", 95: "雷雨", 96: "雷雨", 99: "雷雨"}
+
+def location():
+    """(lat, lon, place): geocode the owner's 'home' answer once, otherwise the configured default."""
+    loc = profile.get("location")
+    home = (profile["facts"].get("home") or {}).get("a", "")
+    if loc and loc.get("for") == home: return loc["lat"], loc["lon"], loc["place"]
+    if home:
+        try:
+            url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode({"name": home, "count": 1, "language": "ja", "format": "json"})
+            r = json.load(urllib.request.urlopen(url, timeout=15)).get("results") or []
+            if r:
+                loc = {"for": home, "lat": r[0]["latitude"], "lon": r[0]["longitude"], "place": r[0].get("name", home)}
+                profile["location"] = loc; save_profile(profile); return loc["lat"], loc["lon"], loc["place"]
+        except Exception as e: print("geocode failed:", e, flush=True)
+    return DEFAULT_LAT, DEFAULT_LON, DEFAULT_PLACE
+
+def weather():
+    """Today's forecast from Open-Meteo (no API key). Returns dict or None."""
+    lat, lon, place = location()
+    url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode({
+        "latitude": lat, "longitude": lon, "timezone": "Asia/Tokyo", "current": "temperature_2m,weather_code",
+        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max", "forecast_days": 1})
+    d = json.load(urllib.request.urlopen(url, timeout=15))
+    day = d["daily"]; cur = d["current"]
+    w = {"place": place, "date": day["time"][0], "code": day["weather_code"][0], "desc": WMO.get(day["weather_code"][0], "不明"),
+         "tmax": day["temperature_2m_max"][0], "tmin": day["temperature_2m_min"][0], "pop": day.get("precipitation_probability_max", [None])[0],
+         "now": cur["temperature_2m"], "now_desc": WMO.get(cur["weather_code"], "")}
+    try: log = json.load(open(WEATHER_LOG))
+    except Exception: log = {}
+    log[w["date"]] = {"tmax": w["tmax"], "tmin": w["tmin"], "code": w["code"]}
+    json.dump(dict(sorted(log.items())[-60:]), open(WEATHER_LOG, "w"))
+    return w
+
+def temp_trend(w):
+    """Compare today's high with the last week's average -> a Kansai remark or ''."""
+    try: log = json.load(open(WEATHER_LOG))
+    except Exception: return ""
+    past = [v["tmax"] for k, v in sorted(log.items()) if k < w["date"]][-7:]
+    if len(past) >= 3:
+        avg = sum(past) / len(past)
+        if w["tmax"] <= avg - 3: return "先週より寒なってきたなあ。"
+        if w["tmax"] >= avg + 3: return "先週より暑なってきたなあ。"
+    if w["tmax"] >= 32: return "今日はえらい暑いで。水分とりや。"
+    if w["tmax"] <= 8: return "今日はだいぶ冷えるで。あったかくしいや。"
+    return ""
+
+def calendar_remark():
+    import calendar, datetime
+    t = datetime.date.today(); wd = "月火水木金土日"[t.weekday()]
+    parts = [f"今日は{t.month}月{t.day}日、{wd}曜日。"]
+    left = calendar.monthrange(t.year, t.month)[1] - t.day
+    if left == 0: parts.append("今月も今日で終わりやな。")
+    elif left <= 5: parts.append(f"今月もあと{left}日やな。")
+    if t.month == 12 and t.day >= 25: parts.append("今年ももうすぐ終わりやで。")
+    if t.weekday() == 0: parts.append("週の始まりやな。")
+    elif t.weekday() == 4: parts.append("明日から休みやん。")
+    return " ".join(parts)
+
+def morning_facts():
+    """Deterministic, true facts for the first greeting of the day: date/weekday, real weather, temperature trend."""
+    txt = calendar_remark()
+    try:
+        w = weather()
+        pop = f"、降水確率{w['pop']}%" if w.get("pop") is not None and w["pop"] >= 30 else ""
+        txt += f" {w['place']}は{w['desc']}、最高{round(w['tmax'])}度{pop}。"
+        umb = "傘持って行きや。" if (w.get("pop") or 0) >= 50 or w["code"] >= 51 else ""
+        txt += " " + (temp_trend(w) or umb)
+    except Exception as e: print("weather failed:", e, flush=True)
+    return txt.strip()
 
 # ---------- news / topics for the owner ----------
 def load_topics():
@@ -299,9 +377,8 @@ def time_greeting():
 def vlm_known(jpeg, name, mode):
     """mode: 'greet' (first time today) or 'checkin' (hourly condition check)"""
     if mode == "greet":
-        g = time_greeting()
-        want = (f'"say": "{name}さんへの関西弁の挨拶（{g}）＋顔の様子から読み取った一言（合計35文字以内）。'
-                f'例: 「{name}さん{g}ー。今日はご機嫌よさそうやな」「{name}さん{g}。今日は顔つかれてない？」 実際の表情に合わせる"')
+        want = ('"say": "顔の様子から読み取った関西弁の一言だけ（25文字以内、挨拶や名前は含めない、敬語にしない）。'
+                '例: 「今日はご機嫌よさそうやな」「ちょっと顔つかれてない？」 実際の表情に合わせる"')
     else:
         want = (f'"say": "{name}さんの今の様子を気づかう関西弁の一言（35文字以内、挨拶は不要）。'
                 f'例: 「{name}さん、疲れてない？少し休んだら？」「{name}さん、ええ顔してるやん。調子よさそうやな」 実際の表情・顔色・目の様子に合わせる"')
@@ -413,6 +490,9 @@ class H(BaseHTTPRequestHandler):
             ses = sessions.get(q["sid"][0])
             if not ses: return self._json(404, {"say": ""})
             self._json(200, {"say": ses["history"][0][1], "listen": {"url": "/chat?sid=" + q["sid"][0], "seconds": 7, "prompt": ses["history"][0][1]}})
+        elif u.path == "/weather":
+            try: self._json(200, {"facts": morning_facts(), "weather": weather()})
+            except Exception as e: self._json(502, {"error": str(e)})
         elif u.path == "/profile": self._json(200, profile)
         elif u.path == "/topics": self._json(200, load_topics())
         elif u.path == "/topics/refresh":
@@ -485,7 +565,9 @@ class H(BaseHTTPRequestHandler):
                     print(f"visit: known {person['name']} sim={sim:.2f} quiet{' +question' if resp.get('listen') else ''}{' +topic' if resp.get('display') else ''} ({time.time()-t0:.1f}s)", flush=True)
                     return self._json(200, resp)
                 j = vlm_known(body, person["name"], mode)
-                say = clean(j.get("say", "")) or (f"{person['name']}さん{time_greeting()}ー" if mode == "greet" else "")
+                say = clean(j.get("say", ""))
+                if mode == "greet":   # facts first (date, weekday, real weather), then the VLM's observation
+                    say = f"{person['name']}さん{time_greeting()}ー。" + (morning_facts() + " " if is_owner else "") + say
                 show = None
                 if is_owner:
                     reps = pending_reports()

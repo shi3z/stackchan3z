@@ -56,7 +56,9 @@ void startSearch() {
   Serial.println("[search] looking for a face...");
 }
 String g_commentUrl = CFG_BRAIN_URL;   // brain: face recognition + greeting; /learn on the same host
-String g_lastCommentText, g_lastName;
+String g_lastCommentText, g_lastName, g_lastSayError;
+volatile bool g_recording = false;
+int g_sayFail = 0, g_sayOk = 0;
 
 static const char* HOSTNAME = CFG_HOSTNAME;
 
@@ -141,6 +143,8 @@ uint8_t* readBody(HTTPClient& http, int len) {
 }
 
 void playBuf(uint8_t* buf, int len) {
+  for (int i = 0; i < 200 && g_recording; i++) delay(50);     // never play into a disabled speaker while the mic runs
+  if (!M5.Speaker.isEnabled()) { M5.Speaker.begin(); M5.Speaker.setVolume(CFG_SPEAKER_VOLUME); }
   M5.Speaker.stop();
   if (g_wav) { free(g_wav); g_wav = nullptr; }
   g_wav = buf; g_wavStart = millis();
@@ -150,17 +154,23 @@ void playBuf(uint8_t* buf, int len) {
 
 // Download a WAV from the TTS proxy and play it on the speaker (non-blocking; buffer freed in loop()).
 bool say(const String& text, const String& emotion = "happy") {
-  if (!g_tts.length() || WiFi.status() != WL_CONNECTED) { Serial.println("[say] no tts url / no wifi"); return false; }
+  if (!g_tts.length() || WiFi.status() != WL_CONNECTED) { g_lastSayError = "no tts url / no wifi"; g_sayFail++; Serial.println("[say] no tts url / no wifi"); return false; }
   String url = g_tts + "?text=" + urlEncode(text) + "&emotion=" + urlEncode(emotion);
-  HTTPClient http; http.setTimeout(30000);
-  if (!http.begin(url)) return false;
-  int code = http.GET(); int len = http.getSize();
-  if (code != 200 || len <= 44) { Serial.printf("[say] http %d len %d\n", code, len); http.end(); return false; }
-  uint8_t* buf = readBody(http, len); http.end();
-  if (!buf) { Serial.println("[say] download failed"); return false; }
-  playBuf(buf, len);
-  Serial.printf("[say] playing %d bytes: %s\n", len, text.c_str());
-  return true;
+  for (int attempt = 0; attempt < 2; attempt++) {
+    HTTPClient http; http.setTimeout(45000);
+    if (!http.begin(url)) { g_lastSayError = "begin failed"; continue; }
+    int code = http.GET(); int len = http.getSize();
+    if (code != 200 || len <= 44) { g_lastSayError = "http " + String(code) + " len " + String(len); Serial.printf("[say] %s\n", g_lastSayError.c_str()); http.end(); delay(500); continue; }
+    uint8_t* buf = readBody(http, len); http.end();
+    if (!buf) { g_lastSayError = "download failed"; Serial.println("[say] download failed"); delay(500); continue; }
+    playBuf(buf, len);
+    g_sayOk++;
+    Serial.printf("[say] playing %d bytes: %s\n", len, text.c_str());
+    return true;
+  }
+  g_sayFail++;
+  Serial.printf("[say] FAILED (%s): %s\n", g_lastSayError.c_str(), text.c_str());
+  return false;
 }
 
 // ---------- camera capture (JPEG) ----------
@@ -219,6 +229,7 @@ uint8_t* recordWav(uint32_t seconds, size_t* outLen) {
   uint8_t* wav = (uint8_t*)ps_malloc(44 + samples * 2);
   if (!wav) return nullptr;
   int16_t* pcm = (int16_t*)(wav + 44);
+  g_recording = true;
   M5.Speaker.end(); M5.Mic.begin();
   size_t off = 0; const size_t chunk = 512;
   while (off < samples) {
@@ -226,7 +237,8 @@ uint8_t* recordWav(uint32_t seconds, size_t* outLen) {
     if (M5.Mic.record(pcm + off, n, rate, false)) { off += n; while (M5.Mic.isRecording()) delay(1); }
     else delay(1);
   }
-  M5.Mic.end(); M5.Speaker.begin();
+  M5.Mic.end(); M5.Speaker.begin(); M5.Speaker.setVolume(CFG_SPEAKER_VOLUME);
+  g_recording = false;
   uint32_t dataLen = samples * 2, byteRate = rate * 2;
   memcpy(wav, "RIFF", 4); uint32_t v = 36 + dataLen; memcpy(wav + 4, &v, 4); memcpy(wav + 8, "WAVEfmt ", 8);
   v = 16; memcpy(wav + 16, &v, 4); uint16_t h = 1; memcpy(wav + 20, &h, 2); memcpy(wav + 22, &h, 2);
@@ -397,6 +409,7 @@ void handleStatus() {
   j += "\"face\":" + String(millis() - g_faceSeen < 700 ? "true" : "false") + ",\"track\":" + String(g_track ? "true" : "false") + ",";
   j += "\"head\":{\"attached\":" + String(head.isAttached() ? "true" : "false") + ",\"servos\":" + String(head.servosFound() ? "true" : "false") + ",\"pan\":" + String(head.pan(), 1) +
        ",\"tilt\":" + String(head.tilt(), 1) + "},";
+  j += "\"speech\":{\"ok\":" + String(g_sayOk) + ",\"failed\":" + String(g_sayFail) + ",\"last_error\":\"" + jsonEscape(g_lastSayError) + "\",\"playing\":" + String(M5.Speaker.isPlaying() ? "true" : "false") + ",\"enabled\":" + String(M5.Speaker.isEnabled() ? "true" : "false") + "},";
   j += "\"requests\":" + String(g_reqCount);
   j += "}";
   server.send(200, "application/json", j);
@@ -817,7 +830,7 @@ void loop() {
   M5.update();
   face.update();
   head.update();
-  if (g_wav && !M5.Speaker.isPlaying() && millis() - g_wavStart > 300) { free(g_wav); g_wav = nullptr; }
+  if (g_wav && !M5.Speaker.isPlaying() && millis() - g_wavStart > 1500) { free(g_wav); g_wav = nullptr; }
 
   // --- pupils follow the detected face ---
   bool faceNow = g_track && (millis() - g_faceSeen < 700);

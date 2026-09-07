@@ -15,6 +15,7 @@ greets them in Kansai dialect via a VLM, and is reachable from anywhere on your 
 - **顔を見つけたら**: 首を止めて写真を撮り、Mac の「脳」へ送信。
   - 知らない人 →「あんた、だれ？」と聞き、4秒録音 → Whisper で聞き取り → 名前と顔を記憶（「○○さんやな。覚えたで！」）。
   - 知っている人 → その日初めてなら時間帯に合わせた挨拶＋顔の様子の一言。以後は1時間に1回だけ「疲れてない？少し休んだら？」のような気遣い。それ以外は黙る。
+  - ご主人へのその日最初の挨拶には、日付と曜日、**本当の天気**（Open-Meteo、API キー不要）、今月の残り日数、先週との気温差（寒くなってきた等）を事実から組み立てて添える。場所はプロフィールの「住まい」を地名検索、未回答なら `STACKCHAN_LAT/LON/PLACE`（既定は東京）。
 - **ご主人**: 普段使う人を「ご主人」として登録（ダッシュボードの「ご主人にする」か `/owner?name=`）。
   - ご主人以外（知らない人も、名前を覚えた別の人も）が映ったら写真を保存して Mac に通知し、次にご主人が来たときに「さっき○○さんが来てたで」と口頭で報告して、その人の写真を画面に出す。
   - ご主人の写真を1日1回保存（その日最初に見つけたとき）。
@@ -149,6 +150,7 @@ python3 tools/stackchan_client.py photo shot.jpg
 | `POST /clothes?name=..` (image/jpeg) | 服装の写真 → その日初回はコメント、2回目以降は前回と比較して変化だけ指摘 → `{say, changed}` |
 | `POST /answer?key=..&q=..` (audio/wav) | プロフィール質問への答え → 要点を `profile.json` に保存 → `{say}` |
 | `GET /profile` / `GET /topics` / `GET /topics/refresh` | プロフィール / 話題一覧 / 今すぐ検索 |
+| `GET /weather` | 今日の天気（Open-Meteo）と、朝の挨拶に使う事実の文 |
 | `POST /chat?sid=..` (audio/wav) / `GET /chat/session?sid=..` | ニュース雑談の次の一手（返答→LLM→`{say, listen?}`） / 脳から始めた雑談の切り出し取得 |
 | `GET /` / `GET /events.json` / `GET /photos/<file>` | ダッシュボード / 履歴 JSON / 保存写真 |
 
@@ -172,7 +174,7 @@ python3 tools/stackchan_client.py photo shot.jpg
 - `server/brain.py`: 挨拶/様子見/居眠りのプロンプト、`CHECKIN_INTERVAL_S`（様子見の間隔）、`SIM_THRESHOLD`（同一人物判定）、
   `REPORT_COOLDOWN_S`（ご主人以外の報告間隔）、`NAG_INTERVAL_S`（居眠り注意の間隔）、`PROFILE_QUESTIONS`（定番の質問）。
   環境変数 `STACKCHAN_OWNER_PHOTO_INTERVAL`（ご主人の写真間隔、秒）、`STACKCHAN_ASK_INTERVAL`（質問の間隔）、`STACKCHAN_TOPIC_INTERVAL`（話題更新の間隔）、
-  `STACKCHAN_BOARD_URL`（話題を掲示するボードの URL。`install_services.sh` が BOARD_IP から設定）。
+  `STACKCHAN_BOARD_URL`（話題を掲示するボードの URL。`install_services.sh` が BOARD_IP から設定）、`STACKCHAN_LAT` / `STACKCHAN_LON` / `STACKCHAN_PLACE`（天気の既定地点）。
 - `server/tts_proxy.py`: TTS バックエンド。`STACKCHAN_SAY_VOICE` で `say` の声を変更。
 
 ## ハマりどころ
