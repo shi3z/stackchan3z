@@ -25,7 +25,9 @@ greets them in Kansai dialect via a VLM, and is reachable from anywhere on your 
 - **プロフィール収集**: ご主人と話すタイミングで（2時間に1回まで）仕事・趣味・住まい・会社の場所などを1問ずつ聞き、答えを録音→Whisper→LLMで要点抽出して `profile.json` に保存。定番の質問が埋まったら LLM が次の質問を考える。
 - **ニュース雑談**: プロフィールから LLM が検索語を作り、Google ニュース RSS を検索、関係が深そうな記事を最大3件選んで要約（3時間ごと）。
   ご主人が近くにいて会話中でないときに「○○って知ってる？〜らしいんやけど」と自然に切り出し、返答を聞いて記事の範囲で答える雑談を最大3往復。見出しは画面にも表示。ダッシュボードに一覧。
-- **ダッシュボード**: Mac の `http://<mac>:9002/`（tailnet なら `https://<mac>.<tailnet>.ts.net:8444/`）で、写真と発言の履歴、人物一覧（ご主人設定・削除）を一覧表示。
+- **ダッシュボード**: Mac の `http://<mac>:9002/`（tailnet なら `https://<mac>.<tailnet>.ts.net:8444/`）で、写真と発言の履歴、人物一覧（ご主人設定・削除）、プロフィール、話題を一覧表示。
+
+<p align="center"><img src="docs/dashboard.jpg" width="800" alt="Web dashboard: people, profile, topics, and the photo/speech timeline"></p>
 - **喋る**: 音声合成は Tsukasa-Speech（StyleTTS2）API か、macOS の `say`（設定不要）。
 - **HTTP API**: 喋る・画面表示・首振り・写真・顔追従設定など。tailscale serve で tailnet 全体から呼べます。
 
