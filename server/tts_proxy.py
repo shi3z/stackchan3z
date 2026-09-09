@@ -40,6 +40,15 @@ def synth_say(text, emotion):
         subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", aiff, wav], check=True)
         return open(wav, "rb").read()
 
+def normalize(data, peak=0.9):
+    """Scale the WAV so its peak hits `peak` of full scale (the little speakers are quiet)."""
+    import audioop
+    w = wave.open(io.BytesIO(data)); frames = w.readframes(w.getnframes()); params = w.getparams()
+    mx = audioop.max(frames, 2)
+    if mx <= 0: return data
+    frames = audioop.mul(frames, 2, min(4.0, peak * 32767 / mx))
+    out = io.BytesIO(); o = wave.open(out, "wb"); o.setparams(params); o.writeframes(frames); o.close(); return out.getvalue()
+
 def shift_pitch(data, semitones):
     """Pitch-shift a WAV with ffmpeg's rubberband (tempo preserved)."""
     if not semitones: return data
@@ -51,11 +60,11 @@ def shift_pitch(data, semitones):
 
 def synth(text, emotion, pitch=None):
     pitch = PITCH if pitch is None else pitch
-    key = hashlib.sha1(f"{BACKEND}|{VOICE}|{RATE}|{emotion}|{pitch}|{text}".encode()).hexdigest()
+    key = hashlib.sha1(f"{BACKEND}|{VOICE}|{RATE}|{emotion}|{pitch}|norm|{text}".encode()).hexdigest()
     path = os.path.join(CACHE, key + ".wav")
     if os.path.exists(path): return open(path, "rb").read()
     data = synth_tsukasa(text, emotion) if BACKEND == "tsukasa" else synth_say(text, emotion)
-    data = shift_pitch(data, pitch)
+    data = normalize(shift_pitch(data, pitch))
     open(path, "wb").write(data); return data
 
 class H(BaseHTTPRequestHandler):

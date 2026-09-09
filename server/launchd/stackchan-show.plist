@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>stackchan-show</string>
+  <key>ProgramArguments</key><array>
+    <string>__PY__</string><string>__REPO__/tools/manzai.py</string>
+    <string>--a</string><string>__BOARD_A__</string><string>--b</string><string>__BOARD_B__</string>
+    <string>--news</string><string>--lines</string><string>14</string><string>--if-owner-around</string><string>30</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>STACKCHAN_TTS_A</key><string>http://127.0.0.1:9001/say</string>
+    <key>STACKCHAN_TTS_B</key><string>http://127.0.0.1:9003/say</string>
+    <key>STACKCHAN_VLM_URL</key><string>__VLM_URL__</string>
+    <key>STACKCHAN_VLM_MODEL</key><string>__VLM_MODEL__</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>StartCalendarInterval</key><array>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>10</integer></dict>
+  </array>
+  <key>StandardOutPath</key><string>/tmp/stackchan-show.log</string>
+  <key>StandardErrorPath</key><string>/tmp/stackchan-show.log</string>
+</dict></plist>

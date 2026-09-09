@@ -48,7 +48,8 @@ greets them in Kansai dialect via a VLM, and is reachable from anywhere on your 
 - M5Stack **StackChan**（公式製品。CoreS3 本体、Feetech SCS0009 サーボ×2、ベース基板）が本命の構成。
 - **Core2 v1.3 を StackChan 台座に載せた構成**でも動きます（`--fqbn m5stack:esp32:m5stack_core2`）。ただし
   - カメラがないので顔検出・顔認識・服装・訪問の自動発火は無効。画面タップ（または `/api/talk`）で会話を始める。
-  - 内蔵 PDM マイク（GPIO0/34）は台座に載せた状態では信号が取れない（台座のバス配線と衝突する模様。M5Unified 経由でも ESP-IDF 直叩きでも定数データのみ）。そのためマイク無し扱いで「喋るだけ」。台座から外した状態なら要再確認。
+  - 内蔵 PDM マイク（GPIO0/34。v1.3 でも同じ配線）は台座に載せた状態では信号が取れない（データ線が最大値に張り付く。台座のバス配線と衝突）。そのためマイク無し扱いで「喋るだけ」。
+    音声認識したい場合は Port A に M5 PDM Unit を挿し、`config_local.h` で `HAS_MIC 1` と `CFG_EXT_PDM_CLK 33` / `CFG_EXT_PDM_DATA 32` を定義（未検証）。
   - サーボは M-Bus 経由で TX=G27 / RX=G19（総当たりで特定）。IO エキスパンダは同じ。
   - 顔は既定で「眠そうな顔」（円の輪郭＋半分閉じた瞼の線、下半分は白目に黒い瞳）。`CFG_FACE_STYLE` で切替。
   - 首は PWM ではなく **SCS シリアルバスサーボ**（UART1 1Mbps、TX=G6/RX=G7、ID1=左右、ID2=上下）。
@@ -130,7 +131,7 @@ STACKCHAN_URL=https://<mac>.<tailnet>.ts.net:8443 python3 tools/stackchan_client
 |---|---|
 | `/api/status` | 状態 JSON（IP, RSSI, カメラ, 顔, 首の角度など） |
 | `/api/say?text=...&emotion=happy` | 喋る（tts_proxy 経由） |
-| `/api/display?text=...&size=1..3&ms=4000` | 画面に文字（日本語可、`\n` 改行。size1 は下段バー、2〜3 は中央） |
+| `/api/display?text=...&size=1..3&ms=4000` | 画面に文字（日本語可、`\n` 改行、幅で自動折返し）。文字は常に画面下段で、表示中は目が少し上に寄るので目にかぶらない |
 | `/api/display?image=URL&ms=6000` | JPEG（QVGA 推奨）を画面に表示。`/photos/...` のような相対パスは脳サービスから取得 |
 | `/api/head?gesture=nod\|shake\|center&n=2` | 首のジェスチャー |
 | `/api/head?pan=60&tilt=100&speed=3` | 首の絶対角（pan 10〜170、tilt 62〜118 = pitch 5〜85°） |
@@ -161,6 +162,14 @@ STACKCHAN_TTS_A=http://<mac>:9001/say STACKCHAN_TTS_B=http://<mac>:9003/say \
 
 LLM が関西弁の漫才台本（A=ツッコミ、B=ボケ、各行に nod/shake/tilt の動き）を書き、声を先に合成してから2台に交互に喋らせます。
 ツッコミは首を横に振り、ボケは首をかしげ、相方はうなずいて反応します。台本は `manzai_last.json` に残り、`--script` で再演できます。
+`--news` を付けると Google ニュースの見出し（トップ・AI・テクノロジー）から今日の時事ネタで台本を書きます。
+`SERVICES="show"`（`BOARD_A`/`BOARD_B` 指定）で launchd に登録すると、毎日 12:10 と 19:10 に、直近30分にご主人を見ていたときだけ自動上演します。
+
+**AI 同士の会話**（台本ではなく、その場で LLM が相手の発言を受けて次の一言を作る）:
+```sh
+python3 tools/dialogue.py --a http://<boardA> --b http://<boardB> --topic "AIは人間の友達になれるか" --turns 12 [--news]
+```
+A（ハナ: 家のスタックちゃん、皮肉屋でツッコミ鋭い）と B（ガク: 会社用、のんびり前向き、低い声）の人格で、2行ずつ先読み生成しながら喋ります。
 
 ## 脳サービス API（Mac :9002）
 

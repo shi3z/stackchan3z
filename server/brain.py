@@ -577,6 +577,8 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/weather":
             try: self._json(200, {"facts": morning_facts(), "weather": weather()})
             except Exception as e: self._json(502, {"error": str(e)})
+        elif u.path == "/presence":
+            self._json(200, {"owner_seen_min": round((time.time() - owner_seen_ts) / 60, 1) if owner_seen_ts else 9999, "talking": time.time() < talking_until})
         elif u.path == "/profile": self._json(200, profile)
         elif u.path == "/topics": self._json(200, load_topics())
         elif u.path == "/topics/refresh":

@@ -69,6 +69,7 @@ WebServer server(80);
 
 String g_ssid, g_pass, g_target, g_gw, g_tts, g_greet;
 uint8_t* g_wav = nullptr;   // WAV currently playing (PSRAM); freed when playback ends
+SemaphoreHandle_t g_wavMutex;   // guards g_wav against a second speaker starting while the first still plays
 String g_lastFetch = "";
 unsigned long g_lastReconnect = 0;
 int g_reqCount = 0;
@@ -148,10 +149,13 @@ uint8_t* readBody(HTTPClient& http, int len) {
 void playBuf(uint8_t* buf, int len) {
   for (int i = 0; i < 200 && g_recording; i++) delay(50);     // never play into a disabled speaker while the mic runs
   if (!M5.Speaker.isEnabled()) { M5.Speaker.begin(); M5.Speaker.setVolume(CFG_SPEAKER_VOLUME); }
+  xSemaphoreTake(g_wavMutex, portMAX_DELAY);
   M5.Speaker.stop();
+  for (int i = 0; i < 50 && M5.Speaker.isPlaying(); i++) delay(2);   // wait until the speaker task let go of the old buffer
   if (g_wav) { free(g_wav); g_wav = nullptr; }
   g_wav = buf; g_wavStart = millis();
   M5.Speaker.playWav(g_wav, len);
+  xSemaphoreGive(g_wavMutex);
   face.talk(len / 32);   // 16 kHz * 2 bytes = 32 bytes per ms
 }
 
@@ -240,7 +244,11 @@ uint8_t* recordWav(uint32_t seconds, size_t* outLen) {
   if (!wav) return nullptr;
   int16_t* pcm = (int16_t*)(wav + 44);
   g_recording = true;
-  M5.Speaker.end(); M5.Mic.begin();
+  M5.Speaker.end();
+#ifdef CFG_EXT_PDM_CLK
+  { auto mc = M5.Mic.config(); mc.pin_ws = CFG_EXT_PDM_CLK; mc.pin_data_in = CFG_EXT_PDM_DATA; mc.pin_bck = -1; M5.Mic.config(mc); }
+#endif
+  M5.Mic.begin();
   size_t off = 0; const size_t chunk = 512;
   while (off < samples) {
     size_t n = min(chunk, samples - off);
@@ -804,6 +812,7 @@ void setup() {
   M5.Power.setExtOutput(true);
 
   g_camMutex = xSemaphoreCreateMutex();
+  g_wavMutex = xSemaphoreCreateMutex();
   // The first esp_camera_init sometimes fails with "i2c driver install error" (SCCB vs. the M5Unified I2C driver);
   // the failed attempt cleans the port up, so a retry succeeds.
 #if HAS_CAMERA
@@ -855,7 +864,10 @@ void loop() {
   M5.update();
   face.update();
   head.update();
-  if (g_wav && !M5.Speaker.isPlaying() && millis() - g_wavStart > 1500) { free(g_wav); g_wav = nullptr; }
+  if (g_wav && !M5.Speaker.isPlaying() && millis() - g_wavStart > 1500 && xSemaphoreTake(g_wavMutex, 0) == pdTRUE) {
+    if (g_wav && !M5.Speaker.isPlaying()) { free(g_wav); g_wav = nullptr; }
+    xSemaphoreGive(g_wavMutex);
+  }
 
   // --- pupils follow the detected face ---
   bool faceNow = g_track && (millis() - g_faceSeen < 700);

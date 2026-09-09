@@ -7,7 +7,7 @@
 #define CFG_BRAIN_URL    "http://192.168.1.10:9002/visit"    // server/brain.py on your Mac (/learn is derived)
 #define CFG_FETCH_TARGET ""                                  // default URL for /api/fetch (optional)
 #define CFG_GREETING     "こんにちはー。スタックチャンやで。"        // spoken once after Wi-Fi connects (weather is NOT faked here)
-#define CFG_SPEAKER_VOLUME 200                               // 0..255
+#define CFG_SPEAKER_VOLUME 255                               // 0..255 (max)
 
 // Board capabilities (auto): CoreS3 has the camera + esp-dl face tracking; Core2 on a StackChan base has no camera
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -18,6 +18,11 @@
 #else
 #define HAS_CAMERA 0
 #define HAS_MIC 0            // Core2 on the StackChan base: the PDM mic (GPIO0/34) yields no audio (bus conflict) - talk only
+// To listen with a Core2 anyway, plug an M5 PDM Unit (SPM1423) into Port A and set (in config_local.h):
+//   #undef HAS_MIC
+//   #define HAS_MIC 1
+//   #define CFG_EXT_PDM_CLK 33   // Port A SCL
+//   #define CFG_EXT_PDM_DATA 32  // Port A SDA
 #define CFG_SERVO_TX 27      // found by probing the M-Bus on a Core2 + StackChan base
 #define CFG_SERVO_RX 19
 #endif

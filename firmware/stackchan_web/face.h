@@ -2,6 +2,7 @@
 #pragma once
 #include <M5Unified.h>
 #include "config.h"
+#include <vector>
 
 class Face {
  public:
@@ -75,6 +76,7 @@ class Face {
   String ovText; int ovSize = 1;
   uint8_t* imgBuf = nullptr; size_t imgLen = 0; uint32_t imgUntil = 0;
 
+  static constexpr int EYE_Y_TEXT = 92;          // eye center while an overlay is shown (normally H/2)
   static constexpr uint16_t BG     = 0x0000;   // black background
   static constexpr uint16_t BLACK  = 0x0000;
   static constexpr uint16_t WHITE  = 0xFFFF;
@@ -116,30 +118,46 @@ class Face {
     canvas.fillEllipse(cx + px, pcy, pr, pry, BLACK);
   }
 
+  bool overlayActive() const { return ovText.length() > 0; }
+
   void drawOverlay() {
-    if (ovText.length()) {
-      const lgfx::IFont* f = ovSize == 1 ? (const lgfx::IFont*)&fonts::lgfxJapanGothic_16
-                           : ovSize == 2 ? (const lgfx::IFont*)&fonts::lgfxJapanGothic_24
-                                         : (const lgfx::IFont*)&fonts::lgfxJapanGothic_36;
-      int lh = ovSize == 1 ? 18 : ovSize == 2 ? 27 : 40;
-      // split lines on '\n'
-      int nLines = 1; for (char c : ovText) if (c == '\n') nLines++;
-      int boxH = nLines * lh + 8;
-      int y0 = (ovSize == 1) ? H - boxH : (H - boxH) / 2;   // small: bottom bar, large: centered
-      canvas.fillRect(0, y0, W, boxH, WHITE);
-      canvas.setTextColor(BLACK, WHITE);
-      canvas.setFont(f);
-      canvas.setTextSize(1);
-      canvas.setTextDatum(top_center);
-      int y = y0 + 4, from = 0;
-      while (from <= (int)ovText.length()) {
-        int nl = ovText.indexOf('\n', from); if (nl < 0) nl = ovText.length();
-        canvas.drawString(ovText.substring(from, nl), W / 2, y);
-        y += lh; from = nl + 1;
+    if (!ovText.length()) return;
+    // Text never covers the eyes: it lives in the bottom band (the eyes move up while text is shown).
+    const int bandTop = EYE_Y_TEXT + 42;                       // just under the raised eyes
+    const int bandH = H - bandTop;
+    const lgfx::IFont* f = ovSize == 1 ? (const lgfx::IFont*)&fonts::lgfxJapanGothic_16
+                         : ovSize == 2 ? (const lgfx::IFont*)&fonts::lgfxJapanGothic_24
+                                       : (const lgfx::IFont*)&fonts::lgfxJapanGothic_36;
+    int lh = ovSize == 1 ? 18 : ovSize == 2 ? 27 : 40;
+    // wrap on '\n' and on width; keep only what fits in the band
+    canvas.setFont(f); canvas.setTextSize(1);
+    std::vector<String> lines;
+    int from = 0;
+    while (from <= (int)ovText.length() && (int)lines.size() < 8) {
+      int nl = ovText.indexOf('\n', from); if (nl < 0) nl = ovText.length();
+      String para = ovText.substring(from, nl); from = nl + 1;
+      while (para.length()) {
+        // take characters until the width exceeds W-12 (UTF-8 aware)
+        int cut = para.length(); String piece = para;
+        while (canvas.textWidth(piece) > W - 12 && cut > 1) {
+          cut--; while (cut > 0 && (para[cut] & 0xC0) == 0x80) cut--;
+          piece = para.substring(0, cut);
+        }
+        lines.push_back(piece); para = para.substring(cut);
+        if (!piece.length()) break;
       }
-      canvas.setTextDatum(top_left);
-      canvas.setFont(&fonts::Font0);
     }
+    int maxLines = max(1, (bandH - 8) / lh);
+    if ((int)lines.size() > maxLines) lines.resize(maxLines);
+    int boxH = (int)lines.size() * lh + 8;
+    int y0 = H - boxH;
+    canvas.fillRect(0, y0, W, boxH, WHITE);
+    canvas.setTextColor(BLACK, WHITE);
+    canvas.setTextDatum(top_center);
+    int y = y0 + 4;
+    for (auto& ln : lines) { canvas.drawString(ln, W / 2, y); y += lh; }
+    canvas.setTextDatum(top_left);
+    canvas.setFont(&fonts::Font0);
   }
 
   void draw() {
@@ -151,7 +169,7 @@ class Face {
 
     // eyes only, centered on the screen; both pupils point the same way
     int gx = (int)lroundf(gazeX), gy = (int)lroundf(gazeY);   // no jitter: pupils move smoothly only
-    const int ey = H / 2;
+    const int ey = ovText.length() ? EYE_Y_TEXT : H / 2;
     if (CFG_FACE_STYLE == 1) { drawEyeSleepy(W / 2 - 60, ey, gx / 2, gy); drawEyeSleepy(W / 2 + 60, ey, gx / 2, gy); }
     else { drawEye(W / 2 - 60, ey, gx, gy, +1); drawEye(W / 2 + 60, ey, gx, gy, -1); }
 
