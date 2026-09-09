@@ -1,6 +1,7 @@
 // Cartoon face: two half-lidded white eyes on black, both pupils looking the same way (no mouth).
 #pragma once
 #include <M5Unified.h>
+#include "config.h"
 
 class Face {
  public:
@@ -81,6 +82,25 @@ class Face {
   static constexpr uint16_t MOUTH_INSIDE  = 0x0000;   // black inside
   static constexpr uint16_t THROAT        = 0x4208;   // dark gray shading
 
+  // Sleepy style: circle outline; a horizontal lid line about 45% down; below the lid the eye is filled white
+  // with a black pupil (upper part = outline only, like a half-closed eye). Blink: the lid drops to the bottom.
+  void drawEyeSleepy(int cx, int cy, int px, int py) {
+    const int R = 36;
+    canvas.fillCircle(cx, cy, R + 2, WHITE);           // 3 px outline ...
+    canvas.fillCircle(cx, cy, R - 1, BG);
+    int lidY = cy - (int)(R * 0.10f) + (int)(lid * (R * 1.05f));
+    if (lidY > cy + R - 2) lidY = cy + R - 2;
+    for (int y = lidY; y <= cy + R; y++) {             // lower segment filled white
+      int dy = y - cy; int hw = (int)sqrtf(max(0.f, (float)(R * R) - (float)(dy * dy)));
+      canvas.drawFastHLine(cx - hw, y, 2 * hw + 1, WHITE);
+    }
+    int hw = (int)sqrtf(max(0.f, (float)(R * R) - (float)(lidY - cy) * (lidY - cy)));
+    canvas.fillRect(cx - hw - 1, lidY - 2, 2 * hw + 2, 3, WHITE);   // crisp lid edge
+    float k = 1.f - 0.85f * lid;                                    // black pupil inside the white part
+    int pr = 8, pry = max(1, (int)(pr * k)), pcy = lidY + 10 + py;
+    if (pcy - pry > lidY && pcy + pry < cy + R - 2) canvas.fillEllipse(cx + px, pcy, pr, pry, BLACK);
+  }
+
   // Eye = upper half of an ellipse on a flat baseline. Only the top outline is a curve.
   // Openness is expressed solely by the half-ellipse's height (aspect ratio):
   // lid 0 -> full height, lid 1 -> squashed onto the baseline. The pupil squashes with it.
@@ -132,8 +152,8 @@ class Face {
     // eyes only, centered on the screen; both pupils point the same way
     int gx = (int)lroundf(gazeX), gy = (int)lroundf(gazeY);   // no jitter: pupils move smoothly only
     const int ey = H / 2;
-    drawEye(W / 2 - 60, ey, gx, gy, +1);
-    drawEye(W / 2 + 60, ey, gx, gy, -1);
+    if (CFG_FACE_STYLE == 1) { drawEyeSleepy(W / 2 - 60, ey, gx / 2, gy); drawEyeSleepy(W / 2 + 60, ey, gx / 2, gy); }
+    else { drawEye(W / 2 - 60, ey, gx, gy, +1); drawEye(W / 2 + 60, ey, gx, gy, -1); }
 
     drawOverlay();
     canvas.pushSprite(0, 0);

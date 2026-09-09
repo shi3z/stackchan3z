@@ -16,8 +16,10 @@
 #include <Wire.h>
 #include <ArduinoJson.h>
 #include "camera.h"
+#if HAS_CAMERA
 #include "human_face_detect_msr01.hpp"
 #include "human_face_detect_mnp01.hpp"
+#endif
 #include "config.h"
 #include "face.h"
 #include "head.h"
@@ -77,6 +79,7 @@ const char* boardName() {
     case m5::board_t::board_M5StackCoreS3:   return "M5StackCoreS3";
     case m5::board_t::board_M5StackCoreS3SE: return "M5StackCoreS3SE";
     case m5::board_t::board_M5StackCore2:    return "M5StackCore2";
+    case m5::board_t::board_M5Tough:         return "M5Tough";
     case m5::board_t::board_M5Stack:         return "M5Stack";
     case m5::board_t::board_M5AtomS3:        return "M5AtomS3";
     case m5::board_t::board_M5StampS3:       return "M5StampS3";
@@ -176,6 +179,9 @@ bool say(const String& text, const String& emotion = "happy") {
 // ---------- camera capture (JPEG) ----------
 // returns malloc'd JPEG (caller frees) or nullptr. Takes the camera mutex.
 uint8_t* captureJpeg(size_t* outLen, int q = 80) {
+#if !HAS_CAMERA
+  *outLen = 0; return nullptr;
+#else
   if (!g_camOk) return nullptr;
   uint8_t* jpg = nullptr; size_t jlen = 0;
   if (xSemaphoreTake(g_camMutex, pdMS_TO_TICKS(2000)) != pdTRUE) return nullptr;
@@ -183,9 +189,11 @@ uint8_t* captureJpeg(size_t* outLen, int q = 80) {
   if (cam.get()) { if (!frame2jpg(cam.fb, q, &jpg, &jlen)) jpg = nullptr; cam.free(); }
   xSemaphoreGive(g_camMutex);
   *outLen = jlen; return jpg;
+#endif
 }
 
 // ---------- face detection task (core 0) ----------
+#if HAS_CAMERA
 void faceTask(void*) {
   HumanFaceDetectMSR01 s1(0.1F, 0.5F, 10, 0.2F);
   HumanFaceDetectMNP01 s2(0.5F, 0.3F, 5);
@@ -222,9 +230,11 @@ void faceTask(void*) {
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
+#endif
 
 // ---------- mic recording (16 kHz mono 16-bit WAV in PSRAM) ----------
 uint8_t* recordWav(uint32_t seconds, size_t* outLen) {
+  if (!HAS_MIC) { *outLen = 0; return nullptr; }
   const uint32_t rate = 16000; const size_t samples = rate * seconds;
   uint8_t* wav = (uint8_t*)ps_malloc(44 + samples * 2);
   if (!wav) return nullptr;
@@ -299,6 +309,7 @@ void clothesShot(const String& name) {
 
 // Follow "listen" instructions from the brain: record, POST, speak the reply, repeat while the reply asks to listen again.
 void runDialog(JsonDocument& first) {
+  if (!HAS_MIC) return;                       // no usable microphone: speak, but never "listen"
   JsonDocument cur; cur.set(first);
   for (int turn = 0; turn < 6 && cur["listen"].is<JsonObject>(); turn++) {
     String lurl = cur["listen"]["url"] | ""; int secs = cur["listen"]["seconds"] | 4;
@@ -389,7 +400,7 @@ void handleRoot() {
     "<li><a href='/api/camera.jpg'>/api/camera.jpg?q=80</a></li>"
     "<li><a href='/api/track'>/api/track?on=1&auto=1&mirror=0&head=1&pansign=1&tiltsign=1</a> (face tracking, head follow, auto comment)</li>"
     "<li><a href='/api/comment'>/api/comment</a> (photo -> VLM -> speak now)</li>"
-    "<li><a href='/api/talk?ms=3000'>/api/talk?ms=3000</a> (mouth flap)</li>"
+    "<li><a href='/api/talk'>/api/talk</a> (start a conversation with the brain; also a tap on the screen without a camera)</li>"
     "<li><a href='/api/face?mouth=0.2'>/api/face?mouth=0.2</a> (resting mouth 0..1)</li>"
     "<li><a href='/api/say?text=%E3%81%93%E3%82%93%E3%81%AB%E3%81%A1%E3%81%AF%E3%83%BC'>/api/say?text=...</a> (speak via TTS proxy)</li></ul>";
   server.send(200, "text/html", html);
@@ -405,7 +416,7 @@ void handleStatus() {
   j += "\"uptime_s\":" + String(millis() / 1000) + ",";
   j += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
   j += "\"target\":\"" + jsonEscape(g_target) + "\",";
-  j += "\"camera\":" + String(g_camOk ? "true" : "false") + ",";
+  j += "\"camera\":" + String(g_camOk ? "true" : "false") + ",\"mic\":" + String(HAS_MIC ? "true" : "false") + ",";
   j += "\"face\":" + String(millis() - g_faceSeen < 700 ? "true" : "false") + ",\"track\":" + String(g_track ? "true" : "false") + ",";
   j += "\"head\":{\"attached\":" + String(head.isAttached() ? "true" : "false") + ",\"servos\":" + String(head.servosFound() ? "true" : "false") + ",\"pan\":" + String(head.pan(), 1) +
        ",\"tilt\":" + String(head.tilt(), 1) + "},";
@@ -431,14 +442,6 @@ void handleDisplay() {
   g_reqCount++;
   face.overlay(server.arg("text"), 4000);
   server.send(200, "application/json", "{\"ok\":true}");
-}
-
-// /api/talk?ms=2000  : mouth flapping for ms milliseconds
-void handleTalk() {
-  g_reqCount++;
-  uint32_t ms = server.hasArg("ms") ? server.arg("ms").toInt() : 2000;
-  face.talk(ms);
-  server.send(200, "application/json", "{\"ok\":true,\"ms\":" + String(ms) + "}");
 }
 
 // /api/say?text=...&emotion=happy
@@ -559,6 +562,17 @@ void handleDialog() {
   if (xTaskCreatePinnedToCore(dialogTask, "dialog", 16384, nullptr, 1, nullptr, 1) != pdPASS) { g_commentBusy = false; server.send(500, "application/json", "{\"ok\":false}"); return; }
   server.send(202, "application/json", "{\"ok\":true}");
 }
+
+// /api/talk : start a conversation with the brain without a photo (profile question / small talk / news topic).
+// Also triggered by tapping the screen on boards without a camera.
+bool startTalk() {
+  if (g_commentBusy || WiFi.status() != WL_CONNECTED) return false;
+  g_dialogPath = "/talk"; g_commentBusy = true;
+  if (xTaskCreatePinnedToCore(dialogTask, "dialog", 16384, nullptr, 1, nullptr, 1) != pdPASS) { g_commentBusy = false; return false; }
+  return true;
+}
+void handleTalk() { g_reqCount++; bool ok = startTalk(); server.send(ok ? 202 : 409, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false,\"busy\":true}"); }
+
 
 // /api/face?mouth=0..1  : resting mouth openness
 void handleFace() {
@@ -705,18 +719,23 @@ void handleSerialLine(String line) {
     for (int a = 8; a < 120; a++) if (found[a]) { Serial.printf(" 0x%02X", a); n++; }
     Serial.println(n ? "" : " (none)");
   } else if (cmd == "i2crecover") {   // release the driver, clock SCL to free a stuck slave, re-init
+    int scl = M5.In_I2C.getSCL(), sda = M5.In_I2C.getSDA();
     M5.In_I2C.release();
-    pinMode(11, OUTPUT_OPEN_DRAIN); pinMode(12, INPUT_PULLUP);
-    for (int i = 0; i < 16; i++) { digitalWrite(11, LOW); delayMicroseconds(5); digitalWrite(11, HIGH); delayMicroseconds(5); }
-    Serial.printf("[i2crecover] sda=%d after clocking\n", digitalRead(12));
+    pinMode(scl, OUTPUT_OPEN_DRAIN); pinMode(sda, INPUT_PULLUP);
+    for (int i = 0; i < 16; i++) { digitalWrite(scl, LOW); delayMicroseconds(5); digitalWrite(scl, HIGH); delayMicroseconds(5); }
+    Serial.printf("[i2crecover] sda=%d after clocking\n", digitalRead(sda));
     M5.In_I2C.begin();
   } else if (cmd == "camtest") {
+#if HAS_CAMERA
     g_track = false; delay(100);
     if (g_camOk) { esp_camera_deinit(); g_camOk = false; }
     g_camOk = cam.begin();
     if (g_camOk) cam.sensor->set_framesize(cam.sensor, FRAMESIZE_QVGA);
     Serial.printf("[camtest] camera=%s\n", g_camOk ? "ok" : "FAILED");
     g_track = true;
+#else
+    Serial.println("[camtest] no camera on this board");
+#endif
   } else if (cmd == "vmen") {    // vmen on|off : servo power via the base IO expander
     baseIO.setServoPower(rest != "off");
     Serial.printf("[base] servo power=%d\n", baseIO.servoPower());
@@ -746,6 +765,8 @@ void handleSerialLine(String line) {
     if (rest == "off") { g_search = SEARCH_NONE; head.center(); g_headCentered = true; } else startSearch();
   } else if (cmd == "comment") {
     Serial.println(startComment() ? "[comment] started" : "[comment] busy/unavailable");
+  } else if (cmd == "talk") {
+    Serial.println(startTalk() ? "[talk] started" : "[talk] busy/unavailable");
   } else if (cmd == "talk") {
     face.talk(rest.length() ? rest.toInt() : 2000);
   } else if (cmd == "status") {
@@ -785,12 +806,16 @@ void setup() {
   g_camMutex = xSemaphoreCreateMutex();
   // The first esp_camera_init sometimes fails with "i2c driver install error" (SCCB vs. the M5Unified I2C driver);
   // the failed attempt cleans the port up, so a retry succeeds.
+#if HAS_CAMERA
   for (int attempt = 0; attempt < 3 && !g_camOk; attempt++) {
     if (attempt) { Serial.printf("[camera] init retry %d\n", attempt); delay(200); }
     g_camOk = cam.begin();
   }
   if (g_camOk) { cam.sensor->set_framesize(cam.sensor, FRAMESIZE_QVGA);
                  xTaskCreatePinnedToCore(faceTask, "face", 16384, nullptr, 1, nullptr, 0); }
+#else
+  g_track = false;            // nothing to track without a camera; no search sweeps either
+#endif
   // StackChan base: PY32 IO expander (0x6F) pin 0 = VM_EN, the servo power switch
   if (baseIO.begin()) { baseIO.setServoPower(true); delay(200); Serial.printf("[base] io expander v0x%02X, servo power ON\n", baseIO.ver()); }
   else Serial.println("[base] io expander not found (0x6F) - servo power may be off");
@@ -815,8 +840,8 @@ void setup() {
   server.on("/api/track", handleTrack);
   server.on("/api/comment", handleComment);
   server.on("/api/dialog", handleDialog);
-  server.on("/api/camera.jpg", handleCamera);
   server.on("/api/talk", handleTalk);
+  server.on("/api/camera.jpg", handleCamera);
   server.on("/api/face", handleFace);
   server.on("/api/say", handleSay);
   server.onNotFound(handleNotFound);
@@ -870,7 +895,7 @@ void loop() {
       uint32_t sinceFace = millis() - g_faceSeen;
       switch (g_search) {
         case SEARCH_NONE:
-          if (sinceFace > SEARCH_START_AFTER_MS) startSearch();   // also right after boot when nobody is there
+          if (HAS_CAMERA && sinceFace > SEARCH_START_AFTER_MS) startSearch();   // also right after boot when nobody is there
           break;
         case SEARCH_ACTIVE:
           if (millis() - g_searchStart > SEARCH_DURATION_MS) {
@@ -919,5 +944,9 @@ void loop() {
     WiFi.reconnect();
   }
   if (M5.BtnA.wasPressed() && WiFi.status() == WL_CONNECTED) showConnected();
+  if (!HAS_CAMERA && M5.Touch.isEnabled()) {          // no camera: a tap on the face starts a conversation
+    auto t = M5.Touch.getDetail();
+    if (t.wasClicked() && t.y < M5.Display.height() - 30) { if (startTalk()) face.overlay("なに？", 2000, 2); }
+  }
   delay(1);
 }

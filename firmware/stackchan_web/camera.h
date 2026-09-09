@@ -2,6 +2,8 @@
 // the static-init-order crash that library has with M5Unified).
 #pragma once
 #include <M5Unified.h>
+#include "config.h"
+#if HAS_CAMERA
 #include "esp_camera.h"
 #include "esp_log.h"
 
@@ -34,3 +36,14 @@ class CoreS3Camera {
   bool get() { fb = esp_camera_fb_get(); return fb != nullptr; }
   void free() { if (fb) { esp_camera_fb_return(fb); fb = nullptr; } }
 };
+#else
+// No camera on this board: keep the interface so the rest of the sketch compiles
+struct camera_fb_t { uint8_t* buf; size_t len; int width, height; };
+class CoreS3Camera {
+ public:
+  camera_fb_t* fb = nullptr; void* sensor = nullptr;
+  bool begin() { return false; }
+  bool get() { return false; }
+  void free() {}
+};
+#endif

@@ -13,10 +13,11 @@ Needs: insightface, onnxruntime, opencv-python, numpy, mlx-whisper (Apple Silico
   GET  /weather                        -> today's real weather (Open-Meteo) + the morning facts line used in the first greeting
   POST /chat?sid=..  (audio/wav)       -> next turn of a conversation about a topic ("○○って知ってる？"), up to 3 turns
   GET  /chat/session?sid=..            -> opener + listen instruction for a dialog the brain pushed to the board
+  GET  /talk                           -> start a conversation without a photo (profile question / small talk / news topic / date+weather)
   GET  /                               -> dashboard: photos and what was said, newest first
   GET  /events.json  /photos/<file>    -> raw event log / saved photos (in ~/Library/Application Support/stackchan)
 Text to speak is returned; the board speaks it through the TTS proxy (/say). VLM = Ollama via the ssh tunnel."""
-import os, sys, json, time, uuid, re, base64, io, hashlib, urllib.request, urllib.parse, threading
+import os, sys, json, time, uuid, re, base64, io, wave, hashlib, urllib.request, urllib.parse, threading
 os.environ.setdefault("HF_HUB_OFFLINE", "1")   # the HF online check stalls for minutes here; models are cached
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import numpy as np, cv2
@@ -475,8 +476,20 @@ def extract_name(text):
     if not name or "不明" in name or len(name) > 12: return ""
     return name
 
+def audio_stats(wav_bytes):
+    """(seconds, rms) of a 16-bit mono WAV - to tell a dead mic from a bad transcription."""
+    try:
+        w = wave.open(io.BytesIO(wav_bytes)); n = w.getnframes(); fr = w.readframes(n)
+        a = np.frombuffer(fr, dtype=np.int16).astype(np.float32)
+        return round(n / w.getframerate(), 1), int(np.sqrt(np.mean(a * a))) if len(a) else 0
+    except Exception: return 0, -1
+
 def transcribe(wav_bytes):
     import mlx_whisper, tempfile
+    try: open(os.path.join(DB_DIR, "last_heard.wav"), "wb").write(wav_bytes)
+    except Exception: pass
+    sec, rms = audio_stats(wav_bytes); print(f"audio: {sec}s rms={rms}", flush=True)
+    if rms >= 0 and rms < 40: return ""          # (near) silence: do not let whisper hallucinate
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f: f.write(wav_bytes); path = f.name
     kw = dict(path_or_hf_repo=WHISPER, language="ja",
               initial_prompt="「あんた誰？」と聞かれて名前を名乗る返事。例: 私は田中です。山田やで。鈴木といいます。")
@@ -540,6 +553,23 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/":
             data = DASHBOARD.encode()
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+        elif u.path == "/talk":     # GET: start a conversation without a photo (boards without a camera; the owner is assumed)
+            now = time.time(); global talking_until, owner_seen_ts; talking_until = now + 120; owner_seen_ts = now
+            name = (owner() or {}).get("name") or "ご主人"
+            listen = self._maybe_question(now) or self._maybe_smalltalk(now)
+            if listen:
+                self._json(200, {"say": f"{name}さん、{listen['prompt']}", "listen": listen}); return
+            t = next((x for x in load_topics() if not x.get("shown")), None)
+            if t:
+                opener, listen = start_topic_dialog(t)
+                tl = load_topics()
+                for x in tl:
+                    if x["url"] == t["url"]: x["shown"] = True
+                save_topics(tl)
+                self._json(200, {"say": opener, "listen": listen, "display": {"text": wrap_jp("📰 " + t["title"]), "size": 1, "ms": 20000}}); return
+            try: facts = morning_facts()
+            except Exception: facts = ""
+            self._json(200, {"say": f"{name}さん、なんか用？ {facts}".strip()})
         elif u.path == "/chat/session" and q.get("sid"):   # the board fetches the opener of a pushed topic dialog
             ses = sessions.get(q["sid"][0])
             if not ses: return self._json(404, {"say": ""})

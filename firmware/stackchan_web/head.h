@@ -4,6 +4,7 @@
 #pragma once
 #include <Arduino.h>
 #include "SCSCL.h"
+#include "config.h"
 
 class Head {
  public:
@@ -14,8 +15,8 @@ class Head {
   int pitchCenterDeg = 45;                                   // pitch angle (official units) that we call tilt=90
 
   // pins are ignored (kept for API compatibility); the bus is fixed to UART1 G6/G7
-  void begin(int = 6, int = 7) {
-    if (!busOk) busOk = bus.begin(UART_NUM_1, 1000000, 6, 7);
+  void begin(int tx = CFG_SERVO_TX, int rx = CFG_SERVO_RX) {
+    if (!busOk) busOk = bus.begin(UART_NUM_1, 1000000, tx, rx);
     if (!busOk) { Serial.println("[head] uart init failed"); return; }
     pingYaw = bus.Ping(YAW_ID) != -1; pingPitch = bus.Ping(PITCH_ID) != -1;
     Serial.printf("[head] servo ping: yaw(id1)=%s pitch(id2)=%s\n", pingYaw ? "ok" : "NO", pingPitch ? "ok" : "NO");
@@ -28,8 +29,8 @@ class Head {
   bool isGesturing() const { return gesture != NONE; }
   bool atTarget() const { return fabsf(curPan - tgtPan) < 1.5f && fabsf(curTilt - tgtTilt) < 1.5f; }
   bool servosFound() const { return pingYaw && pingPitch; }
-  int pinPan() const { return 6; }
-  int pinTilt() const { return 7; }
+  int pinPan() const { return CFG_SERVO_TX; }
+  int pinTilt() const { return CFG_SERVO_RX; }
   float pan() const { return curPan; }
   float tilt() const { return curTilt; }
   int readRawPan()  { return bus.ReadPos(YAW_ID); }

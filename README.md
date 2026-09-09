@@ -45,7 +45,12 @@ greets them in Kansai dialect via a VLM, and is reachable from anywhere on your 
 
 ## ハードウェア
 
-- M5Stack **StackChan**（公式製品。CoreS3 本体、Feetech SCS0009 サーボ×2、ベース基板）
+- M5Stack **StackChan**（公式製品。CoreS3 本体、Feetech SCS0009 サーボ×2、ベース基板）が本命の構成。
+- **Core2 v1.3 を StackChan 台座に載せた構成**でも動きます（`--fqbn m5stack:esp32:m5stack_core2`）。ただし
+  - カメラがないので顔検出・顔認識・服装・訪問の自動発火は無効。画面タップ（または `/api/talk`）で会話を始める。
+  - 内蔵 PDM マイク（GPIO0/34）は台座に載せた状態では信号が取れない（台座のバス配線と衝突する模様。M5Unified 経由でも ESP-IDF 直叩きでも定数データのみ）。そのためマイク無し扱いで「喋るだけ」。台座から外した状態なら要再確認。
+  - サーボは M-Bus 経由で TX=G27 / RX=G19（総当たりで特定）。IO エキスパンダは同じ。
+  - 顔は既定で「眠そうな顔」（円の輪郭＋半分閉じた瞼の線、下半分は白目に黒い瞳）。`CFG_FACE_STYLE` で切替。
   - 首は PWM ではなく **SCS シリアルバスサーボ**（UART1 1Mbps、TX=G6/RX=G7、ID1=左右、ID2=上下）。
   - ベース基板の IO エキスパンダ（内部 I2C 0x6F）のピン0がサーボ電源。ファームが起動時に ON にします。
   - 上下サーボの可動域はマニュアルどおり 5〜85° に制限しています。
@@ -68,7 +73,8 @@ cat > firmware/stackchan_web/config_local.h <<'EOF'
 #define CFG_BRAIN_URL "http://192.168.1.10:9002/visit"
 EOF
 
-arduino-cli compile --fqbn m5stack:esp32:m5stack_cores3 --output-dir build firmware/stackchan_web
+arduino-cli compile --fqbn m5stack:esp32:m5stack_cores3 --output-dir build firmware/stackchan_web   # CoreS3
+# Core2 (StackChan base): --fqbn m5stack:esp32:m5stack_core2, esptool --chip esp32 --baud 460800, bootloader at 0x1000
 python3 -m esptool --chip esp32s3 --port /dev/cu.usbmodem* --baud 921600 --connect-attempts 10 \
         write_flash -z 0x10000 build/stackchan_web.ino.bin
 ```
@@ -131,6 +137,7 @@ STACKCHAN_URL=https://<mac>.<tailnet>.ts.net:8443 python3 tools/stackchan_client
 | `/api/camera.jpg?q=80` | QVGA JPEG |
 | `/api/track?on=1&auto=1&head=1&mirror=0&pansign=-1&tiltsign=-1&search=1` | 顔追従・自動訪問・首追従・方向・探索の設定と状態 |
 | `/api/comment` | 今すぐ訪問（写真→顔認識→挨拶 or 名前確認）を実行 |
+| `/api/talk` | 写真なしで会話開始（脳の `/talk`: プロフィール質問・昼夕の声かけ・ニュース雑談・日付と天気）。カメラのない機種では画面タップでも発火 |
 | `/api/dialog?path=/chat/session?sid=..` | 脳が用意した会話をボード側で開始（喋る→聞く→送る を返答が続く限り繰り返す） |
 | `/api/fetch?url=...` | ボードから URL を GET |
 
