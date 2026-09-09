@@ -150,6 +150,18 @@ python3 tools/stackchan_client.py head nod --n 3
 python3 tools/stackchan_client.py photo shot.jpg
 ```
 
+## 2台で漫才
+
+```sh
+# 2台目用に低い声のTTSインスタンス（9003番、-4半音）を追加し、2台目のボードで  tts http://<mac>:9003/say
+BOARD_IP=... TTS_API=... SERVICES="tts tts2 forward brain" ./server/install_services.sh
+STACKCHAN_TTS_A=http://<mac>:9001/say STACKCHAN_TTS_B=http://<mac>:9003/say \
+  python3 tools/manzai.py --a http://<boardA> --b http://<boardB> --topic AI --lines 12 [--face]
+```
+
+LLM が関西弁の漫才台本（A=ツッコミ、B=ボケ、各行に nod/shake/tilt の動き）を書き、声を先に合成してから2台に交互に喋らせます。
+ツッコミは首を横に振り、ボケは首をかしげ、相方はうなずいて反応します。台本は `manzai_last.json` に残り、`--script` で再演できます。
+
 ## 脳サービス API（Mac :9002）
 
 | endpoint | 内容 |
